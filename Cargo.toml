@@ -1,0 +1,38 @@
+[package]
+name = "dl"
+version = "0.1.0"
+edition = "2021"
+description = "dl-tui: unofficial DockerLabs terminal dashboard — machine catalog, downloads, writeups, ratings, rankings and progress"
+license = "MIT"
+authors = ["Ouba"]
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.28"
+futures-util = "0.3"
+home = "0.5"
+keyring = { version = "3", features = ["linux-native", "sync-secret-service", "windows-native", "apple-native"] }
+ratatui = "0.29"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "cookies",
+    "json",
+    "stream",
+    "gzip",
+    "http2",
+    "charset",
+] }
+scraper = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+
+[[bin]]
+name = "dl"
+path = "src/main.rs"
