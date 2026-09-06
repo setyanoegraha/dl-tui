@@ -305,7 +305,12 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
             )),
             Line::from(format!(
                 "  Nombre (diplomas): {}",
-                profile.username
+                profile
+                    .perfil
+                    .nombre_diplomas
+                    .as_deref()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(&profile.username)
             )),
             Line::from(format!("  Miembro desde: {member_since}")),
             Line::from(format!(

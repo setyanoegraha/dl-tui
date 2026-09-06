@@ -19,13 +19,17 @@ pub struct Profile {
     pub writeups: Vec<WriteupRef>,
 }
 
-/// Public profile card data: the name shown on certificates, the biography
-/// and when the account joined.
+/// Public profile card data: the biography and when the account joined.
+/// The diploma name lives in the /dashboard form, not in this JSON — it is
+/// filled in separately by [`ProfileFetcher::fetch`].
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PerfilInfo {
     pub biografia: String,
     pub miembro_desde: String,
+    /// "Nombre para diplomas": scraped from /dashboard (#nombre_diploma).
+    #[serde(skip)]
+    pub nombre_diplomas: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -119,9 +123,21 @@ impl ProfileFetcher {
 
     pub async fn fetch(&self, username: &str) -> Result<Profile> {
         let body = self.session.get(&format!("/u/{username}")).await?;
-        let profile: Profile = serde_json::from_str(&body)?;
+        let mut profile: Profile = serde_json::from_str(&body)?;
+        // The diploma name is only rendered inside the /dashboard form.
+        let dashboard = self.session.get("/dashboard").await?;
+        profile.perfil.nombre_diplomas = parse_diploma_name(&dashboard);
         Ok(profile)
     }
+}
+
+/// Extracts the "Nombre para diplomas" from the /dashboard form
+/// (`<input id="nombre_diploma" value="...">`).
+pub fn parse_diploma_name(html: &str) -> Option<String> {
+    let doc = scraper::Html::parse_document(html);
+    let sel = scraper::Selector::parse("#nombre_diploma").ok()?;
+    let value = doc.select(&sel).next()?.value().attr("value")?.trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 #[cfg(test)]
@@ -158,6 +174,7 @@ mod tests {
         }"#;
         let profile: Profile = serde_json::from_str(json).unwrap();
         assert_eq!(profile.username, "noneofyour");
+        assert!(profile.perfil.nombre_diplomas.is_none());
         assert_eq!(profile.progreso.maquinas_hechas, 42);
         assert_eq!(profile.progreso.por_dificultad["Fácil"].totales, 68);
         assert_eq!(profile.estadisticas.puntos_writeups, 120);
@@ -169,5 +186,18 @@ mod tests {
         );
         assert_eq!(profile.writeups[0].maquina, "Whoiam");
         assert_eq!(profile.writeups[0].tipo, "texto");
+    }
+
+    #[test]
+    fn parses_diploma_name_from_dashboard() {
+        let html = r#"<input type="text" id="nombre_diploma" class="form-control"
+            placeholder="Nombre que aparecerá en tus certificados"
+            value="Pandu Setya Nugraha">"#;
+        assert_eq!(
+            parse_diploma_name(html).as_deref(),
+            Some("Pandu Setya Nugraha")
+        );
+        assert_eq!(parse_diploma_name("<input id=\"nombre_diploma\" value=\" \">"), None);
+        assert_eq!(parse_diploma_name("<html></html>"), None);
     }
 }
