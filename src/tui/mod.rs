@@ -407,6 +407,8 @@ pub struct AppState {
     pub selected: usize,
     pub scroll: usize,
     pub machine_sort: MachineSort,
+    /// Progreso toggle (`p`): show only completed machines missing a writeup.
+    pub only_pending_writeup: bool,
     pub quit_warned: bool,
     pub quit: bool,
     pub refresh_requested: bool,
@@ -443,6 +445,7 @@ impl AppState {
             selected: 0,
             scroll: 0,
             machine_sort: MachineSort::default(),
+            only_pending_writeup: false,
             quit_warned: false,
             quit: false,
             refresh_requested: false,
@@ -604,15 +607,43 @@ impl AppState {
         machines
     }
 
-    /// Filtered "machines done" list for the Progreso tab.
+    /// Filtered "machines done" list for the Progreso tab. When
+    /// `only_pending_writeup` is on, only completed machines whose writeup
+    /// has not been published yet are shown.
     pub fn visible_hechas(&self) -> Vec<&crate::modules::profile::MaquinaFicha> {
         let needle = self.filter.to_lowercase();
+        let published = self.data.writeup_published_names();
         self.data
             .profile
             .maquinas_hechas
             .iter()
-            .filter(|m| needle.is_empty() || m.nombre.to_lowercase().contains(&needle))
+            .filter(|m| {
+                (needle.is_empty() || m.nombre.to_lowercase().contains(&needle))
+                    && (!self.only_pending_writeup
+                        || !published.contains(&m.nombre.trim().to_lowercase()))
+            })
             .collect()
+    }
+
+    /// How many completed machines still lack a published writeup.
+    pub fn pending_writeup_count(&self) -> usize {
+        let published = self.data.writeup_published_names();
+        self.data
+            .profile
+            .maquinas_hechas
+            .iter()
+            .filter(|m| !published.contains(&m.nombre.trim().to_lowercase()))
+            .count()
+    }
+
+    /// Toggles the "only pending writeups" view (`p`, Progreso).
+    pub fn toggle_pending_writeup(&mut self) {
+        if self.tab != Tab::Progreso {
+            self.set_status("El filtro de writeups pendientes está en Progreso.");
+            return;
+        }
+        self.only_pending_writeup = !self.only_pending_writeup;
+        self.reset_list_position();
     }
 
     /// Filtered list of the user's published writeups (Writeups tab).
@@ -1596,6 +1627,7 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
             KeyCode::Char('/') => app.enter_filter_mode(),
             KeyCode::Char('a') => app.open_account_popup(),
             KeyCode::Char('o') => app.toggle_downloads_view(),
+            KeyCode::Char('p') => app.toggle_pending_writeup(),
             KeyCode::Char('s') => match app.tab {
                 Tab::Maquinas => {
                     app.machine_sort = app.machine_sort.next();

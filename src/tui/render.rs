@@ -186,11 +186,22 @@ fn filter_block(app: &AppState) -> Block<'_> {
             app.data.catalog.len(),
             app.machine_sort.indicator()
         ),
-        Tab::Progreso => format!(
-            " Completadas {}/{} ",
-            app.visible_hechas().len(),
-            app.data.profile.maquinas_hechas.len()
-        ),
+        Tab::Progreso => {
+            let pending = app.pending_writeup_count();
+            let filter_note = if app.only_pending_writeup {
+                " · solo pendientes".to_string()
+            } else if pending > 0 {
+                format!(" · sin writeup: {pending}")
+            } else {
+                String::new()
+            };
+            format!(
+                " Completadas {}/{}{} ",
+                app.visible_hechas().len(),
+                app.data.profile.maquinas_hechas.len(),
+                filter_note
+            )
+        }
         Tab::Writeups => format!(
             " Writeups {}/{} ",
             app.visible_own_writeups().len(),
@@ -356,7 +367,8 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
 
     // ---- right: completed machines, aligned like the Máquinas table ----
     let visible = app.visible_hechas();
-    let header = Row::new(["Máquina", "Completada", "Certificado"])
+    let published = app.data.writeup_published_names();
+    let header = Row::new(["Máquina", "Completada", "Certificado", "Writeup"])
         .style(Style::new().fg(ACCENT).bold());
     let rows: Vec<Row> = visible
         .iter()
@@ -371,10 +383,16 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
                 Some(cert) => Span::styled(cert.cert_id.clone(), Style::new().fg(OK)),
                 None => Span::styled("-", Style::new().dim()),
             };
+            let writeup = if published.contains(&m.nombre.trim().to_lowercase()) {
+                Span::styled("✓", Style::new().fg(OK).bold())
+            } else {
+                Span::styled("⏳", Style::new().fg(WARN).bold())
+            };
             Row::new([
                 Span::styled(m.nombre.clone(), Style::new().fg(BRIGHT).bold()),
                 Span::styled(date, Style::new().dim()),
                 cert,
+                writeup,
             ])
         })
         .collect();
@@ -385,6 +403,7 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
             Constraint::Fill(1),
             Constraint::Length(12),
             Constraint::Length(12),
+            Constraint::Length(9),
         ],
     )
     .header(header)
@@ -395,11 +414,19 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
     frame.render_stateful_widget(table, right, &mut state);
 
     if visible.is_empty() {
-        let empty = Paragraph::new(Span::styled(
-            "Nada todavía — marca máquinas con m en Máquinas.",
-            Style::new().dim(),
-        ));
-        frame.render_widget(empty, right);
+        let message = if app.only_pending_writeup {
+            "Nada pendiente — todas tus completadas ya tienen writeup ✓"
+        } else {
+            "Nada todavía — marca máquinas con m en Máquinas."
+        };
+        let inner = Rect {
+            x: right.x + 1,
+            y: right.y + 1,
+            width: right.width.saturating_sub(2),
+            height: right.height.saturating_sub(2),
+        };
+        let empty = Paragraph::new(Span::styled(message, Style::new().fg(ACCENT)));
+        frame.render_widget(empty, inner);
     }
 
     app.set_visible_rows(visible_rows_in(right.height));
@@ -885,7 +912,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &AppState) {
             InputMode::Filter => "Enter confirmar · Esc limpia y sale".to_string(),
             InputMode::Normal => match app.tab {
                 Tab::Maquinas => "jk mover · / filtrar · s orden · d descargar · w writeups · v valorar · m completada · i info".to_string(),
-                Tab::Progreso => "jk mover · / filtrar · Enter writeup · c cert · C todos".to_string(),
+                Tab::Progreso => "jk mover · / filtrar · p pendientes · c cert · C todos".to_string(),
                 Tab::Writeups => "jk mover · / filtrar · Enter abrir".to_string(),
             },
         }
