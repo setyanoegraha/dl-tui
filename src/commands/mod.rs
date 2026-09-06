@@ -2,6 +2,7 @@
 //! closures handed to the TUI event loop.
 
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 
 use crate::config::ConfigManager;
 use crate::modules::completed::CompletedManager;
@@ -237,8 +238,10 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
             })
         }
         ActionKind::DownloadAllCerts => {
+            let dest_dir = PathBuf::from(&action.values[0].1);
+
             // Batch: fetch the profile, then download every issued
-            // certificate into <download_dir>/certificados.
+            // certificate into the chosen folder.
             let profile = ProfileFetcher::new(sessions.session())
                 .fetch(&sessions.username)
                 .await?;
@@ -255,10 +258,6 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
                 anyhow::bail!("Todavía no hay certificados emitidos.");
             }
 
-            let dest_dir = ConfigManager::new()
-                .download_dir()
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-                .join("certificados");
             std::fs::create_dir_all(&dest_dir)
                 .with_context(|| format!("No se pudo crear {}", dest_dir.display()))?;
 
@@ -334,14 +333,10 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
             let machine = action.machine.clone();
             let cert_id = action.values[0].1.clone();
             let pdf_url = action.values[1].1.clone();
+            let dest_dir = PathBuf::from(&action.values[2].1);
 
             // Certificates are admin-issued; here we only fetch the issued
-            // PDF into the download folder and open the local copy.
-            let cfg = ConfigManager::new();
-            let dest_dir = cfg
-                .download_dir()
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-                .join("certificados");
+            // PDF into the chosen folder and open the local copy.
             std::fs::create_dir_all(&dest_dir)
                 .with_context(|| format!("No se pudo crear {}", dest_dir.display()))?;
             let safe_machine: String = machine

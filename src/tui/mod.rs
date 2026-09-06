@@ -20,6 +20,8 @@ use crate::modules::writeups::WriteupEntry;
 pub enum PopupKind {
     /// Download destination input (Máquinas).
     Descarga,
+    /// Certificate PDF destination input (`c`/`C`).
+    CertDest,
     /// Writeup URL + tipo input (inside the writeups popup).
     WriteupSubmit,
     /// Four 1-5 score fields.
@@ -70,6 +72,8 @@ pub struct Popup {
     pub text: Option<String>,
     /// Path-completion candidates for the Descarga popup (Tab).
     pub completions: Vec<String>,
+    /// (cert_id, pdf_url) for the certificate destination popup.
+    pub cert: Option<(String, String)>,
 }
 
 impl Popup {
@@ -696,6 +700,7 @@ impl AppState {
             readonly: false,
             text: None,
             completions: Vec::new(),
+            cert: None,
         });
     }
 
@@ -718,6 +723,7 @@ impl AppState {
             readonly: true,
             text: None,
             completions: Vec::new(),
+            cert: None,
         });
     }
 
@@ -757,6 +763,7 @@ impl AppState {
             readonly: true,
             text: Some(format!("{meta}\n\n{body}")),
             completions: Vec::new(),
+            cert: None,
         });
     }
 
@@ -810,6 +817,7 @@ impl AppState {
             readonly: false,
             text: None,
             completions: Vec::new(),
+            cert: None,
         });
     }
 
@@ -852,10 +860,21 @@ impl AppState {
         };
         match self.data.cert_state(&machine) {
             CertState::Ready { cert_id, pdf_url } => {
-                self.pending_action = Some(TuiAction {
-                    kind: ActionKind::DownloadCert,
-                    values: vec![(0, cert_id), (1, pdf_url)],
+                let prefill = crate::config::ConfigManager::new()
+                    .download_dir()
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+                    .join("certificados");
+                self.popup = Some(Popup {
+                    kind: PopupKind::CertDest,
                     machine,
+                    machine_id: 0,
+                    buffers: vec![prefill.display().to_string()],
+                    field: 0,
+                    notice: None,
+                    readonly: false,
+                    text: None,
+                    completions: Vec::new(),
+                    cert: Some((cert_id, pdf_url)),
                 });
             }
             CertState::MissingWriteup => {
@@ -924,10 +943,21 @@ impl AppState {
             self.set_status("Los certificados están disponibles en la pestaña Progreso.");
             return;
         }
-        self.pending_action = Some(TuiAction {
-            kind: ActionKind::DownloadAllCerts,
-            values: vec![],
+        let prefill = crate::config::ConfigManager::new()
+            .download_dir()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join("certificados");
+        self.popup = Some(Popup {
+            kind: PopupKind::CertDest,
             machine: "todos".to_string(),
+            machine_id: 0,
+            buffers: vec![prefill.display().to_string()],
+            field: 0,
+            notice: None,
+            readonly: false,
+            text: None,
+            completions: Vec::new(),
+            cert: None,
         });
     }
 
@@ -1062,6 +1092,30 @@ impl AppState {
                         .map(|(i, s)| (i, s.to_string()))
                         .collect(),
                 });
+            }
+            PopupKind::CertDest => {
+                let dir = values.first().map(|(_, v)| v.clone()).unwrap_or_default();
+                if dir.is_empty() {
+                    self.popup = Some(popup);
+                    self.set_status("Indica el directorio de destino.");
+                    return;
+                }
+                match popup.cert.clone() {
+                    Some((cert_id, pdf_url)) => {
+                        self.pending_action = Some(TuiAction {
+                            kind: ActionKind::DownloadCert,
+                            machine: popup.machine.clone(),
+                            values: vec![(0, cert_id), (1, pdf_url), (2, dir)],
+                        });
+                    }
+                    None => {
+                        self.pending_action = Some(TuiAction {
+                            kind: ActionKind::DownloadAllCerts,
+                            machine: "todos".to_string(),
+                            values: vec![(0, dir)],
+                        });
+                    }
+                }
             }
             _ => {}
         }
@@ -1324,6 +1378,7 @@ fn event_loop(
                         readonly: true,
                         text: Some(crate::tui::render::format_rating(&rating)),
                         completions: Vec::new(),
+            cert: None,
                     });
                 }
                 Err(error) => {
@@ -1433,6 +1488,7 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                     readonly: false,
                     text: None,
                     completions: Vec::new(),
+            cert: None,
                 });
             }
             KeyCode::Esc | KeyCode::Char('q') => app.popup = None,
@@ -1473,10 +1529,12 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                 }
             }
             KeyCode::Tab => {
-                let is_descarga =
-                    app.popup.as_ref().map(|p| p.kind) == Some(PopupKind::Descarga);
+                let is_path_popup = matches!(
+                    app.popup.as_ref().map(|p| p.kind),
+                    Some(PopupKind::Descarga) | Some(PopupKind::CertDest)
+                );
                 if let Some(popup) = app.popup.as_mut() {
-                    if is_descarga {
+                    if is_path_popup {
                         popup.complete_destination();
                     } else {
                         popup.next_field();
@@ -1554,6 +1612,7 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                     readonly: false,
                     text: None,
                     completions: Vec::new(),
+            cert: None,
                 });
             }
             KeyCode::Char('w') => app.open_writeups_popup(),
@@ -1733,6 +1792,7 @@ mod tests {
             readonly: false,
             text: None,
             completions: Vec::new(),
+            cert: None,
         });
 
         // Tab with a trailing separator: lists every directory, input kept.
@@ -1840,6 +1900,7 @@ mod tests {
             readonly: false,
             text: None,
             completions: Vec::new(),
+            cert: None,
         });
         state.confirm_popup();
         assert!(state.pending_action.is_none(), "0 no es válido");

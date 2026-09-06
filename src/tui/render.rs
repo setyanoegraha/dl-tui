@@ -242,13 +242,12 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let [left, right] = Layout::horizontal([Constraint::Percentage(45), Constraint::Fill(1)])
         .areas(area);
 
-    // ---- left: gauges + statistics -------------------------------------
-    let mut lines = vec![Line::from(Span::styled(
+    // ---- left: stacked gauges + perfil + statistics ---------------------
+    let title = Paragraph::new(Span::styled(
         "[ Progreso ]",
         Style::new().fg(ACCENT).bold(),
-    ))];
-    frame.render_widget(Paragraph::new(lines.clone()), left);
-    lines.clear();
+    ));
+    frame.render_widget(title, left);
 
     let mut rows: Vec<(String, u64, u64)> = vec![(
         "Total".to_string(),
@@ -265,7 +264,8 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
         rows.push((label.to_string(), hechas, totales));
     }
 
-    let mut y = left.y + 2;
+    // Gauges stacked one per row, snug under the title.
+    let mut y = left.y + 1;
     for (label, hechas, totales) in &rows {
         if y + 1 > left.bottom() {
             break;
@@ -290,78 +290,68 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
             .ratio(ratio.clamp(0.0, 1.0))
             .filled_style(Style::new().fg(ACCENT));
         frame.render_widget(gauge, slot);
-        y += 2; // gauge row + one blank row
+        y += 1;
     }
 
-    let stats_y = (y + 1).min(left.bottom());
-    let stats_height = left.bottom().saturating_sub(stats_y);
-    if stats_height > 2 {
-        let member_since = profile
-            .perfil
-            .miembro_desde
-            .split('T')
-            .next()
-            .unwrap_or("-")
-            .to_string();
-        let stats_lines = vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "[ Perfil ]",
-                Style::new().fg(ACCENT).bold(),
-            )),
-            Line::from(format!(
-                "  Nombre (diplomas): {}",
-                profile
-                    .perfil
-                    .nombre_diplomas
-                    .as_deref()
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or(&profile.username)
-            )),
-            Line::from(format!("  Miembro desde: {member_since}")),
-            Line::from(format!(
-                "  Biografía    : {}",
-                if profile.perfil.biografia.is_empty() {
-                    "-"
-                } else {
-                    &profile.perfil.biografia
-                }
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "[ Estadísticas ]",
-                Style::new().fg(ACCENT).bold(),
-            )),
-            Line::from(format!(
-                "  Writeups publicados: {}",
-                profile
-                    .estadisticas
-                    .writeups_publicados
-                    .max(profile.writeups.len() as u64)
-            )),
-            Line::from(format!(
-                "  Puntos writeups : {}",
-                profile.estadisticas.puntos_writeups
-            )),
-            Line::from(format!(
-                "  Ranking writeups: #{}",
-                profile.estadisticas.ranking_writeups
-            )),
-            Line::from(format!(
-                "  Ranking creadores: {}",
-                app.data
-                    .ranking_creador
-                    .map(|n| format!("#{n}"))
-                    .unwrap_or_else(|| format!("#{}", profile.estadisticas.ranking_creadores))
-            )),
-        ];
-        let stats_area = Rect {
-            x: left.x + 2,
-            y: stats_y,
-            width: left.width.saturating_sub(4),
-            height: stats_height - 1,
-        };
-        frame.render_widget(Paragraph::new(stats_lines), stats_area);
+    // Perfil + Estadísticas as one paragraph filling the rest — nothing
+    // gets clipped and Perfil sits snug under the gauges.
+    let rest_y = (y + 1).min(left.bottom());
+    let rest_height = left.bottom().saturating_sub(rest_y);
+    let member_since = profile
+        .perfil
+        .miembro_desde
+        .split('T')
+        .next()
+        .unwrap_or("-")
+        .to_string();
+    let diploma_name = profile
+        .perfil
+        .nombre_diplomas
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&profile.username);
+    let mut lines = vec![
+        Line::from(Span::styled("[ Perfil ]", Style::new().fg(ACCENT).bold())),
+        Line::from(format!("  Nombre (diplomas): {diploma_name}")),
+        Line::from(format!("  Miembro desde: {member_since}")),
+        Line::from(format!(
+            "  Biografía    : {}",
+            if profile.perfil.biografia.is_empty() {
+                "-"
+            } else {
+                &profile.perfil.biografia
+            }
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[ Estadísticas ]",
+            Style::new().fg(ACCENT).bold(),
+        )),
+        Line::from(format!(
+            "  Puntos writeups : {}",
+            profile.estadisticas.puntos_writeups
+        )),
+        Line::from(format!(
+            "  Ranking writeups: #{}",
+            profile.estadisticas.ranking_writeups
+        )),
+        Line::from(format!(
+            "  Ranking creadores: {}",
+            app.data
+                .ranking_creador
+                .map(|n| format!("#{n}"))
+                .unwrap_or_else(|| format!("#{}", profile.estadisticas.ranking_creadores))
+        )),
+    ];
+    let rest_area = Rect {
+        x: left.x + 2,
+        y: rest_y,
+        width: left.width.saturating_sub(4),
+        height: rest_height,
+    };
+    if rest_height > 0 {
+        lines.truncate(rest_height as usize);
+        frame.render_widget(Paragraph::new(lines), rest_area);
     }
 
     // ---- right: completed machines, aligned like the Máquinas table ----
@@ -546,7 +536,9 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
     };
     // Room for the path-completion listing (max 6 candidates + header +
     // overflow notice).
-    let completion_lines = if popup.kind == PopupKind::Descarga && !popup.completions.is_empty() {
+    let completion_lines = if matches!(popup.kind, PopupKind::Descarga | PopupKind::CertDest)
+        && !popup.completions.is_empty()
+    {
         1 + popup.completions.len().min(6) + usize::from(popup.completions.len() > 6)
     } else {
         0
@@ -568,7 +560,16 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
         PopupKind::Descarga => (
             format!(" Descargar — {} ", popup.machine),
             vec!["Destino:"],
-            "Enter descargar · Esc cancelar",
+            "Tab completar ruta · Enter descargar · Esc cancelar",
+        ),
+        PopupKind::CertDest => (
+            if popup.machine == "todos" {
+                " Destino de los certificados ".to_string()
+            } else {
+                format!(" Destino del certificado — {} ", popup.machine)
+            },
+            vec!["Destino:"],
+            "Tab completar ruta · Enter descargar · Esc cancelar",
         ),
         PopupKind::WriteupSubmit => (
             format!(" Enviar writeup — {} ", popup.machine),
@@ -621,7 +622,9 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
     }
     lines.push(Line::from(""));
     // Path-completion listing (Tab in the Descarga popup), zsh style.
-    if popup.kind == PopupKind::Descarga && !popup.completions.is_empty() {
+    if matches!(popup.kind, PopupKind::Descarga | PopupKind::CertDest)
+        && !popup.completions.is_empty()
+    {
         lines.push(Line::from(Span::styled(
             "  directorios:",
             Style::new().dim(),
@@ -872,7 +875,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &AppState) {
             Some(PopupKind::Account) => "Enter cambiar cuenta · l cerrar sesión · Esc cerrar".to_string(),
             Some(PopupKind::Valoracion) => "Enter valorar · Esc cerrar".to_string(),
             Some(PopupKind::Descripcion) => "Esc cerrar".to_string(),
-            Some(PopupKind::Descarga) => "Tab completar ruta · Enter descargar · Esc cancelar".to_string(),
+            Some(PopupKind::Descarga) | Some(PopupKind::CertDest) => {
+                "Tab completar ruta · Enter descargar · Esc cancelar".to_string()
+            }
             _ => "Enter enviar · ↑↓/Tab cambiar campo · Esc cancelar".to_string(),
         }
     } else {
