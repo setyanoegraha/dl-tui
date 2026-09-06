@@ -26,9 +26,23 @@ impl CertificateManager {
         Self { session }
     }
 
+    /// Whether the certificate can be generated: DockerLabs only issues it
+    /// once the writeup is published AND the machine is marked completed.
+    /// `GET /api/certificado/<machine>/disponible` -> {"disponible": bool}.
+    pub async fn available(&self, machine: &str) -> Result<bool> {
+        let body = self
+            .session
+            .get(&format!("/api/certificado/{machine}/disponible"))
+            .await?;
+        let value: serde_json::Value = serde_json::from_str(&body)?;
+        Ok(value
+            .get("disponible")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false))
+    }
+
     /// Generates (or regenerates) the certificate of a completed machine and
-    /// returns the PDF URL. The server may take a moment; unknown shapes are
-    /// searched for any `pdf_url`-like field.
+    /// returns the PDF URL. Server errors surface via the `error` field.
     pub async fn generate(&self, machine: &str) -> Result<String> {
         let body = self
             .session
@@ -49,7 +63,8 @@ impl CertificateManager {
             Some(url) => Ok(url.to_string()),
             None => {
                 let message = value
-                    .get("message")
+                    .get("error")
+                    .or_else(|| value.get("message"))
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("No se pudo generar el certificado.");
                 anyhow::bail!("{message}")

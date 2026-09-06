@@ -505,7 +505,14 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
         PopupKind::RatingSubmit => 12,
         _ => 8,
     };
-    let height = height + u16::from(popup.notice.is_some());
+    // Room for the path-completion listing (max 6 candidates + header +
+    // overflow notice).
+    let completion_lines = if popup.kind == PopupKind::Descarga && !popup.completions.is_empty() {
+        1 + popup.completions.len().min(6) + usize::from(popup.completions.len() > 6)
+    } else {
+        0
+    };
+    let height = height + completion_lines as u16 + u16::from(popup.notice.is_some());
     let width = match popup.kind {
         PopupKind::RatingSubmit => 64,
         PopupKind::CertVerify => 60,
@@ -580,6 +587,26 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
         }
     }
     lines.push(Line::from(""));
+    // Path-completion listing (Tab in the Descarga popup), zsh style.
+    if popup.kind == PopupKind::Descarga && !popup.completions.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  directorios:",
+            Style::new().dim(),
+        )));
+        for name in popup.completions.iter().take(6) {
+            lines.push(Line::from(Span::styled(
+                format!("  {name}"),
+                Style::new().fg(FROST),
+            )));
+        }
+        let rest = popup.completions.len().saturating_sub(6);
+        if rest > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("  … y {rest} más"),
+                Style::new().dim(),
+            )));
+        }
+    }
     lines.push(Line::from(Span::styled(hint, Style::new().dim())));
 
     let border_color = match popup.kind {

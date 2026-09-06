@@ -251,9 +251,27 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
         }
         ActionKind::GenerateCert => {
             let machine = action.machine.clone();
-            let pdf_url = CertificateManager::new(sessions.session())
-                .generate(&machine)
-                .await?;
+            let manager = CertificateManager::new(sessions.session());
+            // The platform only issues the certificate once the writeup is
+            // published AND the machine is marked completed — explain that
+            // instead of surfacing a raw server error.
+            if !manager.available(&machine).await? {
+                return Ok(ActionReport {
+                    title: format!(" Certificado — {machine} "),
+                    entries: vec![
+                        (ReportKind::Failure, "Certificado: ✗ AÚN NO DISPONIBLE".to_string()),
+                        (
+                            ReportKind::Info,
+                            "Requiere: 1) publicar tu writeup (w) y 2) marcar la máquina como completada (m).".to_string(),
+                        ),
+                    ],
+                    changed: false,
+                    status: format!(
+                        "[!] Certificado de {machine} aún no disponible — falta el writeup o marcarla completada."
+                    ),
+                });
+            }
+            let pdf_url = manager.generate(&machine).await?;
             open_in_browser(&pdf_url);
             Ok(ActionReport {
                 title: format!(" Certificado — {machine} "),

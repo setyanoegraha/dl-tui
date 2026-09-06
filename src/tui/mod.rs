@@ -71,6 +71,8 @@ pub struct Popup {
     pub readonly: bool,
     /// Body text for read-only popups (descripción / valoración).
     pub text: Option<String>,
+    /// Path-completion candidates for the Descarga popup (Tab).
+    pub completions: Vec<String>,
 }
 
 impl Popup {
@@ -78,12 +80,15 @@ impl Popup {
         if let Some(buffer) = self.buffers.get_mut(self.field) {
             buffer.push(c);
         }
+        // Typing invalidates a previous completion listing.
+        self.completions.clear();
     }
 
     pub fn pop(&mut self) {
         if let Some(buffer) = self.buffers.get_mut(self.field) {
             buffer.pop();
         }
+        self.completions.clear();
     }
 
     pub fn next_field(&mut self) {
@@ -97,6 +102,99 @@ impl Popup {
             self.field = (self.field + self.buffers.len() - 1) % self.buffers.len();
         }
     }
+
+    /// zsh-style destination completion for the Descarga popup: `Tab`
+    /// expands `~`, completes the last path component against the parent
+    /// directory's subdirectories (common prefix first) and stores the
+    /// candidate list so the popup can display it.
+    pub fn complete_destination(&mut self) {
+        let Some(buffer) = self.buffers.get_mut(0) else {
+            return;
+        };
+        let raw = buffer.clone();
+        let expanded = expand_tilde(&raw);
+        let ends_with_sep = raw.ends_with('/');
+        // A trailing separator means "complete inside this directory": the
+        // partial component is empty even though Path::file_name would
+        // still report one.
+        let (parent, partial) = if ends_with_sep {
+            (expanded.clone(), String::new())
+        } else {
+            split_parent_partial(&expanded)
+        };
+
+        let mut matches: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&parent) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !partial.is_empty() && !name.starts_with(partial.as_str()) {
+                    continue;
+                }
+                // Skip hidden dirs unless the user typed the dot herself.
+                if name.starts_with('.') && (partial.is_empty() || !partial.starts_with('.')) {
+                    continue;
+                }
+                if entry.path().is_dir() {
+                    matches.push(name);
+                }
+            }
+        }
+        matches.sort();
+        if matches.is_empty() {
+            self.completions.clear();
+            return;
+        }
+
+        let completed = common_prefix(&matches);
+        // Replace the partial component with the completed prefix, keeping
+        // the original `~` spelling the user typed.
+        let mut new_raw = raw[..raw.len().saturating_sub(partial.chars().count())].to_string();
+        new_raw.push_str(&completed);
+        if matches.len() == 1 && completed == matches[0] && !ends_with_sep {
+            new_raw.push(std::path::MAIN_SEPARATOR);
+        }
+        *buffer = new_raw;
+        self.completions = matches;
+    }
+}
+
+/// `~` and `~/...` expand to the user's home directory.
+fn expand_tilde(raw: &str) -> PathBuf {
+    if raw == "~" {
+        return home::home_dir().unwrap_or_else(|| PathBuf::from(raw));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = home::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(raw)
+}
+
+/// Splits an expanded path into (parent directory, last component); paths
+/// ending in a separator (or the filesystem root) complete with no partial.
+fn split_parent_partial(expanded: &std::path::Path) -> (PathBuf, String) {
+    if expanded.as_os_str().is_empty() {
+        return (PathBuf::from("."), String::new());
+    }
+    match (expanded.parent(), expanded.file_name()) {
+        (Some(parent), Some(name)) => (parent.to_path_buf(), name.to_string_lossy().to_string()),
+        _ => (expanded.to_path_buf(), String::new()),
+    }
+}
+
+/// Longest prefix shared by every candidate.
+fn common_prefix(items: &[String]) -> String {
+    let mut prefix = items[0].clone();
+    for item in &items[1..] {
+        while !item.starts_with(&prefix) {
+            prefix.pop();
+            if prefix.is_empty() {
+                return prefix;
+            }
+        }
+    }
+    prefix
 }
 
 /// A user action queued from a popup, executed by the host application.
@@ -201,12 +299,6 @@ impl Tab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputMode {
-    Normal,
-    Filter,
-}
-
 /// Sort order of the Máquinas tab (`s` cycles: sitio -> nombre -> fecha ->
 /// dificultad).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -260,6 +352,12 @@ impl RankingView {
             RankingView::Writeups => " · writeups",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    Filter,
 }
 
 /// Overlay listing background download jobs (`o` toggles it).
@@ -473,11 +571,8 @@ impl AppState {
             MachineSort::Fecha => machines.sort_by_key(|m| {
                 std::cmp::Reverse(crate::modules::machines::fecha_sort_key(&m.fecha))
             }),
-            MachineSort::Dificultad => machines.sort_by(|a, b| {
-                a.dificultad
-                    .trim()
-                    .to_lowercase()
-                    .cmp(&b.dificultad.trim().to_lowercase())
+            MachineSort::Dificultad => machines.sort_by_key(|m| {
+                crate::modules::machines::dificultad_rank(&m.dificultad)
             }),
         }
         machines
@@ -538,6 +633,7 @@ impl AppState {
             notice: Some(context.notice().to_string()),
             readonly: false,
             text: None,
+            completions: Vec::new(),
         });
     }
 
@@ -559,6 +655,7 @@ impl AppState {
             notice: None,
             readonly: true,
             text: None,
+            completions: Vec::new(),
         });
     }
 
@@ -597,6 +694,7 @@ impl AppState {
             notice: None,
             readonly: true,
             text: Some(format!("{meta}\n\n{body}")),
+            completions: Vec::new(),
         });
     }
 
@@ -649,6 +747,7 @@ impl AppState {
             notice: None,
             readonly: false,
             text: None,
+            completions: Vec::new(),
         });
     }
 
@@ -666,6 +765,7 @@ impl AppState {
             notice: None,
             readonly: false,
             text: None,
+            completions: Vec::new(),
         });
     }
 
@@ -775,29 +875,24 @@ impl AppState {
                     return;
                 }
                 self.set_status("Conectando...");
-                self.pending_config =
-                    Some((values[0].1.clone(), values[1].1.clone()));
+                self.pending_config = Some((values[0].1.clone(), values[1].1.clone()));
             }
             PopupKind::Descarga => {
-                let dir = values
-                    .first()
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or_default();
+                let dir = values.first().map(|(_, v)| v.clone()).unwrap_or_default();
                 if dir.is_empty() {
                     self.popup = Some(popup);
                     self.set_status("Indica el directorio de destino.");
                     return;
                 }
                 let entry = (popup.machine.clone(), popup.machine_id, PathBuf::from(dir));
+                let machine = entry.0.clone();
                 if self.active_downloads() >= downloads::PARALLEL_DOWNLOADS {
-                    let machine = entry.0.clone();
                     self.download_queue.push_back(entry);
                     self.set_status(format!(
                         "[↓] {machine} en cola — {} descargas activas.",
                         downloads::PARALLEL_DOWNLOADS
                     ));
                 } else {
-                    let machine = entry.0.clone();
                     self.pending_download = Some(entry);
                     self.set_status(format!("[↓] Descarga de {machine} iniciada."));
                 }
@@ -936,9 +1031,8 @@ impl AppState {
     }
 }
 
-/// Runs the TUI until the user quits. The host closures are bundled in
-/// [`Host`]; they block the render thread for the duration of each network
-/// call, exactly like the HMV-TUI event loop.
+/// Host-provided callbacks the event loop calls synchronously (blocking the
+/// render thread for the duration of each network call).
 pub struct Host<'a> {
     pub refetch: &'a dyn Fn() -> Result<TuiData>,
     pub run_action: &'a dyn Fn(TuiAction) -> Result<ActionReport>,
@@ -1120,6 +1214,7 @@ fn event_loop(
                         notice: None,
                         readonly: true,
                         text: Some(crate::tui::render::format_rating(&rating)),
+                        completions: Vec::new(),
                     });
                 }
                 Err(error) => {
@@ -1246,6 +1341,7 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                     notice: None,
                     readonly: false,
                     text: None,
+                    completions: Vec::new(),
                 });
             }
             KeyCode::Esc | KeyCode::Char('q') => app.popup = None,
@@ -1285,7 +1381,18 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                     popup.previous_field();
                 }
             }
-            KeyCode::Down | KeyCode::Tab => {
+            KeyCode::Tab => {
+                let is_descarga =
+                    app.popup.as_ref().map(|p| p.kind) == Some(PopupKind::Descarga);
+                if let Some(popup) = app.popup.as_mut() {
+                    if is_descarga {
+                        popup.complete_destination();
+                    } else {
+                        popup.next_field();
+                    }
+                }
+            }
+            KeyCode::Down => {
                 if let Some(popup) = app.popup.as_mut() {
                     popup.next_field();
                 }
@@ -1359,6 +1466,7 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                     notice: None,
                     readonly: false,
                     text: None,
+                    completions: Vec::new(),
                 });
             }
             KeyCode::Char('w') => app.open_writeups_popup(),
@@ -1392,7 +1500,7 @@ mod tests {
         let profile_json = r#"{
             "username": "noneofyour",
             "progreso": {
-                "catalogo": 201, "maquinas_totales": 201, "maquinas_hechas": 1,
+                "maquinas_totales": 201, "maquinas_hechas": 1,
                 "porcentaje": 0.5,
                 "por_dificultad": {"Muy Fácil": {"hechas": 1, "totales": 8}}
             },
@@ -1467,7 +1575,7 @@ mod tests {
         state.next_tab(); // Progreso (1 máquina hecha)
         assert_eq!(state.tab, Tab::Progreso);
         assert_eq!(state.visible_hechas().len(), 1);
-        state.next_tab(); // Rankings (1 autor)
+        state.next_tab(); // Rankings (2 autores)
         state.move_down();
         assert_eq!(state.selected, 1);
         state.next_tab(); // vuelta a Máquinas
@@ -1484,7 +1592,6 @@ mod tests {
         assert_eq!(state.visible_machines()[0].name, "Dance Samba");
         state.clear_filter();
         assert_eq!(state.visible_machines().len(), 2);
-        // "Intranet" is in maquinas_hechas, so the completed list finds it.
         assert_eq!(state.visible_hechas().len(), 1);
     }
 
@@ -1517,6 +1624,7 @@ mod tests {
     impl AppState {
         pub fn cycle_sort_for_test(&mut self) {
             self.machine_sort = self.machine_sort.next();
+            self.reset_list_position();
         }
     }
 
@@ -1537,7 +1645,6 @@ mod tests {
     #[test]
     fn download_popup_flow_and_gate() {
         let mut state = app();
-        // 'd' on an empty selection still opens with the first machine.
         handle_key(
             &mut state,
             KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty()),
@@ -1554,6 +1661,63 @@ mod tests {
         assert_eq!(machine, "Intranet");
         assert_eq!(id, 1);
         assert_eq!(dir, PathBuf::from("/tmp/vm-lab"));
+    }
+
+    #[test]
+    fn destination_completion_lists_and_completes() {
+        let base = std::env::temp_dir().join(format!("dl-tui-compl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("alpha")).unwrap();
+        std::fs::create_dir_all(base.join("alphabet")).unwrap();
+        std::fs::create_dir_all(base.join("beta")).unwrap();
+        std::fs::write(base.join("file.txt"), "x").unwrap(); // files never complete
+
+        let mut state = app();
+        state.popup = Some(Popup {
+            kind: PopupKind::Descarga,
+            machine: "X".into(),
+            machine_id: 1,
+            buffers: vec![format!("{}/", base.display())],
+            field: 0,
+            notice: None,
+            readonly: false,
+            text: None,
+            completions: Vec::new(),
+        });
+
+        // Tab with a trailing separator: lists every directory, input kept.
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        );
+        let popup = state.popup.as_ref().unwrap();
+        assert_eq!(popup.completions, ["alpha", "alphabet", "beta"]);
+        assert_eq!(popup.buffers[0], format!("{}/", base.display()));
+
+        // Partial input completes the shared prefix of the candidates.
+        state.popup.as_mut().unwrap().buffers[0] = format!("{}/al", base.display());
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        );
+        let popup = state.popup.as_ref().unwrap();
+        assert_eq!(popup.buffers[0], format!("{}/alpha", base.display()));
+        assert_eq!(popup.completions, ["alpha", "alphabet"]);
+
+        // Single match: completes fully with the trailing separator.
+        state.popup.as_mut().unwrap().buffers[0] = format!("{}/b", base.display());
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        );
+        let popup = state.popup.as_ref().unwrap();
+        assert_eq!(popup.buffers[0], format!("{}/beta/", base.display()));
+
+        // Typing clears the stale listing.
+        state.popup.as_mut().unwrap().push('x');
+        assert!(state.popup.as_ref().unwrap().completions.is_empty());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1625,6 +1789,7 @@ mod tests {
             notice: None,
             readonly: false,
             text: None,
+            completions: Vec::new(),
         });
         state.confirm_popup();
         assert!(state.pending_action.is_none(), "0 no es válido");
@@ -1637,7 +1802,12 @@ mod tests {
         assert_eq!(action.machine, "Intranet");
         assert_eq!(
             action.values,
-            vec![(0, "5".to_string()), (1, "4".to_string()), (2, "4".to_string()), (3, "3".to_string())]
+            vec![
+                (0, "5".to_string()),
+                (1, "4".to_string()),
+                (2, "4".to_string()),
+                (3, "3".to_string())
+            ]
         );
     }
 
