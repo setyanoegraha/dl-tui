@@ -5,7 +5,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Clear, LineGauge, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+    Block, Borders, Clear, LineGauge, Paragraph, Row, Table, TableState,
     Tabs, Wrap,
 };
 use ratatui::Frame;
@@ -51,6 +51,7 @@ pub fn draw(frame: &mut Frame, app: &mut AppState) {
     match app.tab {
         Tab::Maquinas => draw_maquinas(frame, body, app),
         Tab::Progreso => draw_progreso(frame, body, app),
+        Tab::Writeups => draw_writeups_tab(frame, body, app),
     }
 
     draw_footer(frame, footer, app);
@@ -190,6 +191,11 @@ fn filter_block(app: &AppState) -> Block<'_> {
             app.visible_hechas().len(),
             app.data.profile.maquinas_hechas.len()
         ),
+        Tab::Writeups => format!(
+            " Writeups {}/{} ",
+            app.visible_own_writeups().len(),
+            app.data.profile.writeups.len()
+        ),
     };
 
     let mut block = Block::default()
@@ -327,6 +333,13 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
                 Style::new().fg(ACCENT).bold(),
             )),
             Line::from(format!(
+                "  Writeups publicados: {}",
+                profile
+                    .estadisticas
+                    .writeups_publicados
+                    .max(profile.writeups.len() as u64)
+            )),
+            Line::from(format!(
                 "  Puntos writeups : {}",
                 profile.estadisticas.puntos_writeups
             )),
@@ -335,8 +348,11 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
                 profile.estadisticas.ranking_writeups
             )),
             Line::from(format!(
-                "  Ranking creadores: #{}",
-                profile.estadisticas.ranking_creadores
+                "  Ranking creadores: {}",
+                app.data
+                    .ranking_creador
+                    .map(|n| format!("#{n}"))
+                    .unwrap_or_else(|| format!("#{}", profile.estadisticas.ranking_creadores))
             )),
         ];
         let stats_area = Rect {
@@ -348,41 +364,101 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
         frame.render_widget(Paragraph::new(stats_lines), stats_area);
     }
 
-    // ---- right: completed machines list --------------------------------
+    // ---- right: completed machines, aligned like the Máquinas table ----
     let visible = app.visible_hechas();
-    let items: Vec<ListItem> = visible
+    let header = Row::new(["Máquina", "Completada", "Certificado"])
+        .style(Style::new().fg(ACCENT).bold());
+    let rows: Vec<Row> = visible
         .iter()
         .map(|m| {
             let date = m
                 .completada_el
                 .as_deref()
                 .and_then(|d| d.split('T').next())
-                .unwrap_or("");
-            let cert_tag = match &m.certificado {
-                Some(cert) => format!("  ✔ {}", cert.cert_id),
-                None => String::new(),
+                .unwrap_or("-")
+                .to_string();
+            let cert = match &m.certificado {
+                Some(cert) => Span::styled(cert.cert_id.clone(), Style::new().fg(OK)),
+                None => Span::styled("-", Style::new().dim()),
             };
-            ListItem::new(Line::from(vec![
-                Span::styled(" ● ", Style::new().fg(OK)),
+            Row::new([
                 Span::styled(m.nombre.clone(), Style::new().fg(BRIGHT).bold()),
-                Span::styled(format!("  — {date}{cert_tag}"), Style::new().dim()),
-            ]))
+                Span::styled(date, Style::new().dim()),
+                cert,
+            ])
         })
         .collect();
 
-    let empty_items: Vec<ListItem> = vec![ListItem::new(Line::from(Span::styled(
-        "Nada todavía — marca máquinas con m en Máquinas.",
-        Style::new().dim(),
-    )))];
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Fill(1),
+            Constraint::Length(12),
+            Constraint::Length(12),
+        ],
+    )
+    .header(header)
+    .row_highlight_style(Style::new().bg(HL_BG).add_modifier(Modifier::BOLD))
+    .block(filter_block(app));
 
-    let list = List::new(if visible.is_empty() { empty_items } else { items })
-        .highlight_style(Style::new().bg(HL_BG).add_modifier(Modifier::BOLD))
-        .block(filter_block(app));
+    let mut state = TableState::default().with_selected(Some(app.selected));
+    frame.render_stateful_widget(table, right, &mut state);
 
-    let mut state = ListState::default().with_selected(Some(app.selected));
-    frame.render_stateful_widget(list, right, &mut state);
+    if visible.is_empty() {
+        let empty = Paragraph::new(Span::styled(
+            "Nada todavía — marca máquinas con m en Máquinas.",
+            Style::new().dim(),
+        ));
+        frame.render_widget(empty, right);
+    }
 
     app.set_visible_rows(visible_rows_in(right.height));
+}
+
+fn draw_writeups_tab(frame: &mut Frame, area: Rect, app: &mut AppState) {
+    let visible = app.visible_own_writeups();
+    let header = Row::new(["Máquina", "Tipo", "Publicada", "URL"])
+        .style(Style::new().fg(ACCENT).bold());
+    let rows: Vec<Row> = visible
+        .iter()
+        .map(|w| {
+            let (tipo, tipo_style) = if w.tipo.contains("video") {
+                ("🎥", Style::new().fg(FROST))
+            } else {
+                ("📝", Style::new().fg(PURPLE))
+            };
+            let date = w
+                .publicado_el
+                .as_deref()
+                .and_then(|d| d.split('T').next())
+                .unwrap_or("-")
+                .to_string();
+            Row::new([
+                Span::styled(w.maquina.clone(), Style::new().fg(BRIGHT).bold()),
+                Span::styled(tipo, tipo_style),
+                Span::styled(date, Style::new().dim()),
+                Span::styled(w.url.clone(), Style::new().fg(LINK)),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(22),
+            Constraint::Length(6),
+            Constraint::Length(12),
+            Constraint::Fill(1),
+        ],
+    )
+    .header(header)
+    .row_highlight_style(Style::new().bg(HL_BG).add_modifier(Modifier::BOLD))
+    .block(filter_block(app));
+
+    let mut state = TableState::default().with_selected(Some(app.selected));
+    frame.render_stateful_widget(table, area, &mut state);
+
+    app.set_visible_rows(visible_rows_in(area.height));
 }
 
 fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
@@ -805,6 +881,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &AppState) {
             InputMode::Normal => match app.tab {
                 Tab::Maquinas => "jk mover · / filtrar · s orden · d descargar · w writeups · v valorar · m completada · i info".to_string(),
                 Tab::Progreso => "jk mover · / filtrar · Enter writeup · c cert · C todos".to_string(),
+                Tab::Writeups => "jk mover · / filtrar · Enter abrir".to_string(),
             },
         }
     };

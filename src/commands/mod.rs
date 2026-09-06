@@ -428,5 +428,26 @@ async fn fetch_tui_data(sessions: &SessionCache) -> Result<TuiData> {
         .get_catalog()
         .await?;
 
-    Ok(TuiData { profile, catalog })
+    // Author ranking position: fetch the full list once and find our
+    // username instead of displaying every entry.
+    let ranking_creador: Option<u64> = async {
+        let body = session.get("/api/ranking_autores").await.ok()?;
+        let list: serde_json::Value = serde_json::from_str(&body).ok()?;
+        let arr = list.as_array()?;
+        let position = arr.iter().position(|author| {
+            author
+                .get("nombre")
+                .and_then(serde_json::Value::as_str)
+                .map(|name| name.trim().eq_ignore_ascii_case(&sessions.username))
+                .unwrap_or(false)
+        })?;
+        Some(position as u64 + 1)
+    }
+    .await;
+
+    Ok(TuiData {
+        profile,
+        catalog,
+        ranking_creador,
+    })
 }

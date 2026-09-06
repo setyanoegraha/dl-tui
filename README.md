@@ -80,7 +80,7 @@ The dashboard opens straight into the **Configurar DockerLabs** popup: type your
 
 ## Usage Guide
 
-Two keyboard-driven tabs — **Máquinas** and **Progreso**:
+Three keyboard-driven tabs — **Máquinas**, **Progreso** and **Writeups**:
 
 | Keys | Action |
 | :--- | :--- |
@@ -94,8 +94,9 @@ Two keyboard-driven tabs — **Máquinas** and **Progreso**:
 | `v` | **Máquinas** — rating averages popup; `Enter` opens the form to send your 4 scores (1–5) |
 | `m` | **Máquinas** — toggle the machine as completed (the platform's solved mechanic). The ✓ column marks machines already completed |
 | `i` / `Enter` | **Máquinas** — description popup with the full machine details |
-| `c` | **Progreso** — download the selected machine's certificate PDF into `certificados/` and open it. If it hasn't been issued yet, the popup tells you the exact missing step (publish writeup `w` → mark completed `m` → wait for admin validation) |
+| `c` | **Máquinas & Progreso** — download the selected machine's certificate PDF into `certificados/` and open it. If it hasn't been issued yet, the popup tells you the exact missing step (publish writeup `w` → mark completed `m` → wait for admin validation) |
 | `C` | **Progreso** — batch-download every issued certificate into `certificados/` |
+| `Enter` | **Writeups** — open your own writeup for the selected machine |
 | `a` | Account popup: `Enter` switch account, `l` logout |
 | `o` | Toggle the Descargas overlay (downloads keep running when closed) |
 | `c` | In the Descargas overlay — cancel the most recent active download |

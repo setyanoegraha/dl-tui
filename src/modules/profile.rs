@@ -51,6 +51,7 @@ pub struct DificultadProgreso {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Estadisticas {
+    pub writeups_publicados: u64,
     pub puntos_writeups: u64,
     pub ranking_writeups: u64,
     pub ranking_creadores: u64,

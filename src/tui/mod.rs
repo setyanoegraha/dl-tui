@@ -215,6 +215,8 @@ pub struct TuiAction {
 pub struct TuiData {
     pub profile: Profile,
     pub catalog: Vec<Machine>,
+    /// Position of our username in /api/ranking_autores (creators).
+    pub ranking_creador: Option<u64>,
 }
 
 impl TuiData {
@@ -321,15 +323,17 @@ impl WriteupsPopup {
 pub enum Tab {
     Maquinas,
     Progreso,
+    Writeups,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 2] = [Tab::Maquinas, Tab::Progreso];
+    pub const ALL: [Tab; 3] = [Tab::Maquinas, Tab::Progreso, Tab::Writeups];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Maquinas => "Máquinas",
             Tab::Progreso => "Progreso",
+            Tab::Writeups => "Writeups",
         }
     }
 
@@ -607,6 +611,46 @@ impl AppState {
             .collect()
     }
 
+    /// Filtered list of the user's published writeups (Writeups tab).
+    pub fn visible_own_writeups(&self) -> Vec<&crate::modules::profile::WriteupRef> {
+        let needle = self.filter.to_lowercase();
+        self.data
+            .profile
+            .writeups
+            .iter()
+            .filter(|w| {
+                needle.is_empty()
+                    || w.maquina.to_lowercase().contains(&needle)
+                    || w.url.to_lowercase().contains(&needle)
+                    || w.tipo.to_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+
+    /// URL of the selected own writeup (Writeups tab).
+    pub fn selected_own_writeup_url(&self) -> Option<&str> {
+        if self.tab != Tab::Writeups {
+            return None;
+        }
+        self.visible_own_writeups()
+            .get(self.selected)
+            .map(|w| w.url.as_str())
+    }
+
+    pub fn open_selected_own_writeup(&mut self) {
+        if let Some(url) = self.selected_own_writeup_url() {
+            let opened = std::process::Command::new("xdg-open")
+                .arg(url)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            self.set_status(match opened {
+                Ok(_) => format!("Abierto en el navegador: {url}"),
+                Err(error) => format!("xdg-open falló: {error}"),
+            });
+        }
+    }
+
     /// Dismisses the result popup; returns true if a refresh was queued.
     pub fn close_report(&mut self) -> bool {
         self.report = None;
@@ -624,6 +668,7 @@ impl AppState {
                 .visible_hechas()
                 .get(self.selected)
                 .map(|m| m.nombre.clone()),
+            Tab::Writeups => None,
         }
     }
 
@@ -1026,6 +1071,7 @@ impl AppState {
         match self.tab {
             Tab::Maquinas => self.visible_machines().len(),
             Tab::Progreso => self.visible_hechas().len(),
+            Tab::Writeups => self.visible_own_writeups().len(),
         }
     }
 
@@ -1479,8 +1525,8 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                     app.machine_sort = app.machine_sort.next();
                     app.reset_list_position();
                 }
-                Tab::Progreso => {
-                    app.set_status("La ordenación no está disponible en Progreso.");
+                Tab::Progreso | Tab::Writeups => {
+                    app.set_status("La ordenación no está disponible en esta pestaña.");
                 }
             },
             KeyCode::Char('d') => {
@@ -1525,6 +1571,7 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
             KeyCode::Enter => match app.tab {
                 Tab::Maquinas => app.open_descripcion_popup(),
                 Tab::Progreso => app.open_selected_hecha_writeup(),
+                Tab::Writeups => app.open_selected_own_writeup(),
             },
             _ => {}
         },
@@ -1553,6 +1600,7 @@ mod tests {
             ]
         }"#;
         TuiData {
+            ranking_creador: Some(40),
             profile: serde_json::from_str(profile_json).unwrap(),
             catalog: vec![
                 Machine {
