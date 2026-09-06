@@ -140,9 +140,13 @@ pub fn start_download(machine: String, machine_id: u32, dest_dir: PathBuf) -> Re
 
         let mut s = task_state.lock().unwrap();
         match outcome {
-            Ok(path) => {
+            Ok((path, skipped)) => {
                 s.phase = Phase::Done;
-                s.message = path.display().to_string();
+                s.message = if skipped {
+                    format!("{} — ya existía, omitido", path.display())
+                } else {
+                    path.display().to_string()
+                };
             }
             Err(error) => {
                 if task_cancel.load(Ordering::Relaxed) {

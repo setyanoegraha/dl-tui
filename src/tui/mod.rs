@@ -1037,6 +1037,17 @@ impl AppState {
                 }
                 let entry = (popup.machine.clone(), popup.machine_id, PathBuf::from(dir));
                 let machine = entry.0.clone();
+                // Two concurrent downloads of the same machine into the same
+                // folder would corrupt the shared staging file — refuse.
+                let duplicate = self.download_jobs.iter().any(|job| {
+                    job.is_active() && job.machine == machine && job.dest_dir == entry.2
+                });
+                if duplicate {
+                    self.set_status(format!(
+                        "[↓] {machine} ya se está descargando en esa carpeta."
+                    ));
+                    return;
+                }
                 if self.active_downloads() >= downloads::PARALLEL_DOWNLOADS {
                     self.download_queue.push_back(entry);
                     self.set_status(format!(
@@ -1295,6 +1306,13 @@ fn event_loop(
         }
         if app.active_downloads() < downloads::PARALLEL_DOWNLOADS {
             while let Some((machine, id, dir)) = app.download_queue.pop_front() {
+                let duplicate = app.download_jobs.iter().any(|job| {
+                    job.is_active() && job.machine == machine && job.dest_dir == dir
+                });
+                if duplicate {
+                    app.set_status(format!("[↓] {machine} ya se está descargando ahí."));
+                    continue;
+                }
                 match downloads::start_download(machine.clone(), id, dir.clone()) {
                     Ok(job) => {
                         app.download_jobs.push(std::sync::Arc::new(job));

@@ -53,8 +53,14 @@ pub async fn resolve_download_url(machine_id: u32) -> Result<String> {
 }
 
 /// Downloads a zip with progress reporting and verifies the byte count
-/// against `Content-Length` when the server sends it.
-pub async fn download_zip(url: &str, destination: &Path, hooks: &DownloadHooks<'_>) -> Result<PathBuf> {
+/// against `Content-Length` when the server sends it. If the target file
+/// already exists the download is skipped (same source, same archive) and
+/// `Ok((path, true))` is returned.
+pub async fn download_zip(
+    url: &str,
+    destination: &Path,
+    hooks: &DownloadHooks<'_>,
+) -> Result<(PathBuf, bool)> {
     let client = reqwest::Client::builder()
         .user_agent(concat!("dl-tui/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(600))
@@ -72,7 +78,7 @@ pub async fn download_zip(url: &str, destination: &Path, hooks: &DownloadHooks<'
     let filename = filename_from(&resp, url);
     let output = destination.join(&filename);
     if output.exists() {
-        bail!("El archivo '{filename}' ya existe.");
+        return Ok((output, true));
     }
 
     let part = destination.join(format!("{filename}.part"));
@@ -85,7 +91,7 @@ pub async fn download_zip(url: &str, destination: &Path, hooks: &DownloadHooks<'
             tokio::fs::rename(&part, &output)
                 .await
                 .context("No se pudo finalizar la descarga")?;
-            Ok(output)
+            Ok((output, false))
         }
         Err(error) => {
             let _ = tokio::fs::remove_file(&part).await;
