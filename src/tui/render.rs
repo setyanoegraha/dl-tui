@@ -13,10 +13,7 @@ use ratatui::Frame;
 use crate::modules::machines::{dificultad_rank, Machine};
 use crate::modules::ratings::MachineRating;
 
-use super::{
-    ActionReport, AppState, InputMode, Popup, PopupKind, RankingView as RankView, ReportKind, Tab,
-    ViewMode, WriteupsPopup, downloads::Phase,
-};
+use super::{ActionReport, AppState, InputMode, Popup, PopupKind, ReportKind, Tab, ViewMode, WriteupsPopup, downloads::Phase};
 
 // Nord theme palette (https://www.nordtheme.com/docs/colors-and-palettes).
 const NORD1: Color = Color::Rgb(0x3B, 0x42, 0x52); // polar night (dim bg)
@@ -44,7 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut AppState) {
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
-        Constraint::Length(1),
+        Constraint::Length(2),
     ])
     .areas(frame.area());
 
@@ -54,7 +51,6 @@ pub fn draw(frame: &mut Frame, app: &mut AppState) {
     match app.tab {
         Tab::Maquinas => draw_maquinas(frame, body, app),
         Tab::Progreso => draw_progreso(frame, body, app),
-        Tab::Rankings => draw_rankings(frame, body, app),
     }
 
     draw_footer(frame, footer, app);
@@ -194,10 +190,6 @@ fn filter_block(app: &AppState) -> Block<'_> {
             app.visible_hechas().len(),
             app.data.profile.maquinas_hechas.len()
         ),
-        Tab::Rankings => format!(
-            " Rankings {} ",
-            app.ranking_view.indicator()
-        ),
     };
 
     let mut block = Block::default()
@@ -298,7 +290,29 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let stats_y = (y + 1).min(left.bottom());
     let stats_height = left.bottom().saturating_sub(stats_y);
     if stats_height > 2 {
+        let member_since = profile
+            .perfil
+            .miembro_desde
+            .split('T')
+            .next()
+            .unwrap_or("-")
+            .to_string();
         let stats_lines = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "[ Perfil ]",
+                Style::new().fg(ACCENT).bold(),
+            )),
+            Line::from(format!("  Nombre       : {}", profile.username)),
+            Line::from(format!("  Miembro desde: {member_since}")),
+            Line::from(format!(
+                "  Biografía    : {}",
+                if profile.perfil.biografia.is_empty() {
+                    "-"
+                } else {
+                    &profile.perfil.biografia
+                }
+            )),
             Line::from(""),
             Line::from(Span::styled(
                 "[ Estadísticas ]",
@@ -361,65 +375,6 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
     frame.render_stateful_widget(list, right, &mut state);
 
     app.set_visible_rows(visible_rows_in(right.height));
-}
-
-fn draw_rankings(frame: &mut Frame, area: Rect, app: &mut AppState) {
-    let (header, rows, widths): (Row, Vec<Row>, [Constraint; 3]) = match app.ranking_view {
-        RankView::Autores => (
-            Row::new(["#", "Autor", "Máquinas"]).style(Style::new().fg(ACCENT).bold()),
-            app.data
-                .ranking_autores
-                .iter()
-                .enumerate()
-                .map(|(i, a)| {
-                    Row::new([
-                        Span::styled(format!("{}", i + 1), Style::new().dim()),
-                        Span::styled(a.nombre.clone(), Style::new().fg(BRIGHT).bold()),
-                        Span::styled(format!("{}", a.maquinas), Style::new().fg(ACCENT)),
-                    ])
-                })
-                .collect(),
-            [
-                Constraint::Length(6),
-                Constraint::Fill(1),
-                Constraint::Length(12),
-            ],
-        ),
-        RankView::Writeups => (
-            Row::new(["#", "Escritor", "Puntos"]).style(Style::new().fg(ACCENT).bold()),
-            app.data
-                .ranking_writeups
-                .iter()
-                .enumerate()
-                .map(|(i, w)| {
-                    Row::new([
-                        Span::styled(format!("{}", i + 1), Style::new().dim()),
-                        Span::styled(w.nombre.clone(), Style::new().fg(BRIGHT).bold()),
-                        Span::styled(format!("{}", w.puntos), Style::new().fg(WARN)),
-                    ])
-                })
-                .collect(),
-            [
-                Constraint::Length(6),
-                Constraint::Fill(1),
-                Constraint::Length(12),
-            ],
-        ),
-    };
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .row_highlight_style(Style::new().bg(HL_BG).add_modifier(Modifier::BOLD))
-        .block(filter_block(app));
-
-    let mut state = TableState::default().with_selected(Some(app.selected));
-    frame.render_stateful_widget(table, area, &mut state);
-
-    let len = match app.ranking_view {
-        RankView::Autores => app.data.ranking_autores.len(),
-        RankView::Writeups => app.data.ranking_writeups.len(),
-    };
-    app.set_visible_rows(visible_rows_in(area.height).min(len.max(1)));
 }
 
 fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
@@ -821,31 +776,37 @@ fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &AppState) {
-    let [keys_area, status_area] = Layout::horizontal([Constraint::Min(80), Constraint::Fill(1)]).areas(area);
+    // Two rows so the key hints never get truncated: row 1 = context
+    // actions, row 2 = global keys + status.
+    let [actions, bottom] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+    let [global_area, status_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Min(24)]).areas(bottom);
 
-    let keys: String = if app.popup.is_some() {
+    let actions_line: String = if app.popup.is_some() {
         match app.popup.as_ref().map(|p| p.kind) {
-            Some(PopupKind::Config) => "Enter guardar y conectar · Esc salir".to_string(),
+            Some(PopupKind::Config) => "Enter guardar y conectar · ↑↓/Tab cambiar campo · Esc salir".to_string(),
             Some(PopupKind::Account) => "Enter cambiar cuenta · l cerrar sesión · Esc cerrar".to_string(),
             Some(PopupKind::Valoracion) => "Enter valorar · Esc cerrar".to_string(),
             Some(PopupKind::Descripcion) => "Esc cerrar".to_string(),
+            Some(PopupKind::Descarga) => "Tab completar ruta · Enter descargar · Esc cancelar".to_string(),
             _ => "Enter enviar · ↑↓/Tab cambiar campo · Esc cancelar".to_string(),
         }
     } else {
         match app.input_mode {
             InputMode::Filter => "Enter confirmar · Esc limpia y sale".to_string(),
-            InputMode::Normal => {
-                let list_keys = match app.tab {
-                    Tab::Maquinas => "jk mover · / filtrar · s orden · d descargar · w writeups · v valorar · m completada · i info · ".to_string(),
-                    Tab::Progreso => "jk mover · / filtrar · Enter writeup · c certificado · ".to_string(),
-                    Tab::Rankings => "jk mover · s alternar · ".to_string(),
-                };
-                let common = "Tab pestañas · a cuenta · r refrescar · q salir";
-                format!("{list_keys}{common}")
-            }
+            InputMode::Normal => match app.tab {
+                Tab::Maquinas => "jk mover · / filtrar · s orden · d descargar · w writeups · v valorar · m completada · i info".to_string(),
+                Tab::Progreso => "jk mover · / filtrar · Enter writeup · c cert · C todos".to_string(),
+            },
         }
     };
-    frame.render_widget(Paragraph::new(Span::styled(keys, Style::new().dim())), keys_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(actions_line, Style::new().dim())),
+        actions,
+    );
+
+    let global = "Tab pestañas · a cuenta · o descargas · r refrescar · q salir";
+    frame.render_widget(Paragraph::new(Span::styled(global, Style::new().dim())), global_area);
 
     let status = if let Some(label) = &app.fetching {
         Span::styled(format!("⟳ {label}"), Style::new().fg(WARN).bold())

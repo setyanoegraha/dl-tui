@@ -17,7 +17,6 @@ Running `dl` opens the dashboard. Written in pure **Rust** (ratatui), shipped as
 * **Writeups** — per-machine community writeups popup (`w`): articles 📝 and videos 🎥, `Enter` opens them in the browser, `u` submits your own URL.
 * **Valoraciones** — per-machine rating averages across 4 criteria (`v`), plus submitting your own scores (1–5).
 * **Progreso** — your completion gauges per difficulty, statistics, the list of machines you marked done (`m` toggles), and certificate generation (`c`) with public `DL-XXXXXX` verification (`V`).
-* **Rankings** — machine creators and writeup authors, side by side.
 * **Account management in-app** (`a`) — switch account or logout; running downloads are never affected.
 * Nord-themed interface.
 
@@ -81,7 +80,7 @@ The dashboard opens straight into the **Configurar DockerLabs** popup: type your
 
 ## Usage Guide
 
-Three keyboard-driven tabs — **Máquinas**, **Progreso** and **Rankings**:
+Two keyboard-driven tabs — **Máquinas** and **Progreso**:
 
 | Keys | Action |
 | :--- | :--- |
@@ -89,13 +88,14 @@ Three keyboard-driven tabs — **Máquinas**, **Progreso** and **Rankings**:
 | `↑` `↓` / `j` `k` | Move selection |
 | `g` / `Home` | Jump to the top of the list |
 | `/` | Filter the current list (type to narrow, `Enter` keeps it, `Esc` clears & exits) |
-| `s` | **Máquinas** — cycle sort: site order → nombre → fecha → dificultad. **Rankings** — toggle autores ↔ writeups |
+| `s` | **Máquinas** — cycle sort: site order → nombre → fecha → dificultad |
 | `d` | **Máquinas** — download popup: pick the destination folder (remembered across sessions), live progress in the Descargas overlay |
 | `w` | **Máquinas** — community writeups popup: `j`/`k` select, `Enter` opens the link, `u` submits your own writeup |
 | `v` | **Máquinas** — rating averages popup; `Enter` opens the form to send your 4 scores (1–5) |
 | `m` | **Máquinas** — toggle the machine as completed (the platform's solved mechanic). The ✓ column marks machines already completed |
 | `i` / `Enter` | **Máquinas** — description popup with the full machine details |
-| `c` | **Progreso** — open the certificate PDF of the selected machine, or generate it (requires writeup published + machine completed) |
+| `c` | **Progreso** — download the selected machine's certificate PDF into `certificados/` and open it. If it hasn't been issued yet, the popup tells you the exact missing step (publish writeup `w` → mark completed `m` → wait for admin validation) |
+| `C` | **Progreso** — batch-download every issued certificate into `certificados/` |
 | `a` | Account popup: `Enter` switch account, `l` logout |
 | `o` | Toggle the Descargas overlay (downloads keep running when closed) |
 | `c` | In the Descargas overlay — cancel the most recent active download |

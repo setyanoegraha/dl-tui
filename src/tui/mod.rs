@@ -13,7 +13,6 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::modules::machines::Machine;
 use crate::modules::profile::Profile;
-use crate::modules::rankings::{AuthorRank, WriteupRank};
 use crate::modules::writeups::WriteupEntry;
 
 /// What a popup asks the user for.
@@ -201,7 +200,8 @@ pub enum ActionKind {
     ToggleCompleted,
     SubmitWriteup,
     SubmitRating,
-    GenerateCert,
+    DownloadCert,
+    DownloadAllCerts,
 }
 
 #[derive(Debug, Clone)]
@@ -215,8 +215,6 @@ pub struct TuiAction {
 pub struct TuiData {
     pub profile: Profile,
     pub catalog: Vec<Machine>,
-    pub ranking_autores: Vec<AuthorRank>,
-    pub ranking_writeups: Vec<WriteupRank>,
 }
 
 impl TuiData {
@@ -228,6 +226,58 @@ impl TuiData {
             .map(|m| m.nombre.trim().to_lowercase())
             .collect()
     }
+
+    /// Lowercased names of the machines with a writeup published by the user.
+    pub fn writeup_published_names(&self) -> std::collections::HashSet<String> {
+        self.profile
+            .writeups
+            .iter()
+            .map(|w| w.maquina.trim().to_lowercase())
+            .collect()
+    }
+
+    /// What stands between the user and a machine's certificate. Certificates
+    /// are issued manually by the DockerLabs admins once the writeup is
+    /// validated and the machine is marked completed.
+    pub fn cert_state(&self, machine: &str) -> CertState {
+        let name = machine.trim().to_lowercase();
+        if let Some(ficha) = self
+            .profile
+            .maquinas_hechas
+            .iter()
+            .find(|m| m.nombre.trim().to_lowercase() == name)
+        {
+            if let Some(cert) = &ficha.certificado {
+                return CertState::Ready {
+                    cert_id: cert.cert_id.clone(),
+                    pdf_url: cert.pdf_url.clone(),
+                };
+            }
+        }
+        let completed = self.completed_names().contains(&name);
+        let writeup = self.writeup_published_names().contains(&name);
+        match (completed, writeup) {
+            (true, true) => CertState::PendingAdmin,
+            (true, false) => CertState::MissingWriteup,
+            (false, true) => CertState::MissingCompleted,
+            (false, false) => CertState::MissingBoth,
+        }
+    }
+}
+
+/// How far the selected machine is from a certificate.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CertState {
+    /// Admin-issued: the PDF can be downloaded.
+    Ready { cert_id: String, pdf_url: String },
+    /// Machine completed, but no writeup published yet.
+    MissingWriteup,
+    /// Writeup published, but the machine is not marked completed.
+    MissingCompleted,
+    /// Neither step done.
+    MissingBoth,
+    /// Both steps done — waiting for an admin to issue the certificate.
+    PendingAdmin,
 }
 
 /// One line of an action result popup.
@@ -271,17 +321,15 @@ impl WriteupsPopup {
 pub enum Tab {
     Maquinas,
     Progreso,
-    Rankings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Maquinas, Tab::Progreso, Tab::Rankings];
+    pub const ALL: [Tab; 2] = [Tab::Maquinas, Tab::Progreso];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Maquinas => "Máquinas",
             Tab::Progreso => "Progreso",
-            Tab::Rankings => "Rankings",
         }
     }
 
@@ -328,30 +376,6 @@ impl MachineSort {
     }
 }
 
-/// Which ranking table the Rankings tab shows (`s` toggles).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RankingView {
-    #[default]
-    Autores,
-    Writeups,
-}
-
-impl RankingView {
-    fn toggle(self) -> Self {
-        match self {
-            RankingView::Autores => RankingView::Writeups,
-            RankingView::Writeups => RankingView::Autores,
-        }
-    }
-
-    pub fn indicator(self) -> &'static str {
-        match self {
-            RankingView::Autores => " · autores",
-            RankingView::Writeups => " · writeups",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -375,7 +399,6 @@ pub struct AppState {
     pub selected: usize,
     pub scroll: usize,
     pub machine_sort: MachineSort,
-    pub ranking_view: RankingView,
     pub quit_warned: bool,
     pub quit: bool,
     pub refresh_requested: bool,
@@ -412,7 +435,6 @@ impl AppState {
             selected: 0,
             scroll: 0,
             machine_sort: MachineSort::default(),
-            ranking_view: RankingView::default(),
             quit_warned: false,
             quit: false,
             refresh_requested: false,
@@ -602,7 +624,6 @@ impl AppState {
                 .visible_hechas()
                 .get(self.selected)
                 .map(|m| m.nombre.clone()),
-            Tab::Rankings => None,
         }
     }
 
@@ -767,11 +788,90 @@ impl AppState {
         });
     }
 
-    /// Certificate action for the selected machine in Progreso (`c`): when
-    /// the profile already carries the certificate, open its PDF directly;
-    /// otherwise queue generation (which first checks availability on the
-    /// platform: writeup published + machine marked completed).
-    pub fn generate_certificate_selected(&mut self) {
+    /// Certificate action for the selected machine (`c`, Máquinas y
+    /// Progreso). Certificates are issued manually by the DockerLabs admins
+    /// once the writeup is validated and the machine is marked completed:
+    /// when the profile already carries it, queue the PDF download;
+    /// otherwise explain the exact missing step.
+    pub fn certificate_action_selected(&mut self) {
+        if self.pending_action.is_some() || self.popup.is_some() || self.report.is_some() {
+            return;
+        }
+        if !matches!(self.tab, Tab::Maquinas | Tab::Progreso) {
+            self.set_status("Los certificados están en las pestañas Máquinas y Progreso.");
+            return;
+        }
+        let Some(machine) = self.selected_machine_name() else {
+            self.set_status("Nada seleccionado.");
+            return;
+        };
+        match self.data.cert_state(&machine) {
+            CertState::Ready { cert_id, pdf_url } => {
+                self.pending_action = Some(TuiAction {
+                    kind: ActionKind::DownloadCert,
+                    values: vec![(0, cert_id), (1, pdf_url)],
+                    machine,
+                });
+            }
+            CertState::MissingWriteup => {
+                self.report = Some(ActionReport {
+                    title: format!(" Certificado — {machine} "),
+                    entries: vec![
+                        (ReportKind::Failure, "Certificado: ✗ FALTA PUBLICAR TU WRITEUP".to_string()),
+                        (
+                            ReportKind::Info,
+                            "Envíalo desde Máquinas: pulsa w sobre la máquina y luego u.".to_string(),
+                        ),
+                    ],
+                    changed: false,
+                    status: format!("[!] {machine}: falta publicar el writeup."),
+                });
+            }
+            CertState::MissingCompleted => {
+                self.report = Some(ActionReport {
+                    title: format!(" Certificado — {machine} "),
+                    entries: vec![
+                        (ReportKind::Failure, "Certificado: ✗ FALTA MARCARLA COMO COMPLETADA".to_string()),
+                        (ReportKind::Info, "Pulsa m sobre la máquina en Máquinas.".to_string()),
+                    ],
+                    changed: false,
+                    status: format!("[!] {machine}: falta marcarla como completada."),
+                });
+            }
+            CertState::MissingBoth => {
+                self.report = Some(ActionReport {
+                    title: format!(" Certificado — {machine} "),
+                    entries: vec![
+                        (ReportKind::Failure, "Certificado: ✗ FALTAN LOS DOS PASOS".to_string()),
+                        (
+                            ReportKind::Info,
+                            "1) Publica tu writeup (w → u) · 2) Marca la máquina completada (m).".to_string(),
+                        ),
+                    ],
+                    changed: false,
+                    status: format!("[!] {machine}: falta el writeup y marcarla completada."),
+                });
+            }
+            CertState::PendingAdmin => {
+                self.report = Some(ActionReport {
+                    title: format!(" Certificado — {machine} "),
+                    entries: vec![
+                        (ReportKind::Success, "Writeup publicado ✓ · Máquina completada ✓".to_string()),
+                        (
+                            ReportKind::Info,
+                            "El certificado lo emite un admin tras validar el writeup — vuelve a comprobarlo más tarde (r).".to_string(),
+                        ),
+                    ],
+                    changed: false,
+                    status: format!("[⏳] {machine}: certificado pendiente de emisión por el admin."),
+                });
+            }
+        }
+    }
+
+    /// Queues the batch download of every admin-issued certificate (`C`,
+    /// Progreso).
+    pub fn download_all_certs_selected(&mut self) {
         if self.pending_action.is_some() || self.popup.is_some() || self.report.is_some() {
             return;
         }
@@ -779,29 +879,10 @@ impl AppState {
             self.set_status("Los certificados están disponibles en la pestaña Progreso.");
             return;
         }
-        let Some(ficha) = self.visible_hechas().get(self.selected).copied() else {
-            self.set_status("Nada seleccionado.");
-            return;
-        };
-        let machine = ficha.nombre.clone();
-        if let Some(cert) = &ficha.certificado {
-            let cert_id = cert.cert_id.clone();
-            let pdf_url = cert.pdf_url.clone();
-            let opened = std::process::Command::new("xdg-open")
-                .arg(&pdf_url)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            self.set_status(match opened {
-                Ok(_) => format!("[✓] Certificado {cert_id} de {machine} — PDF abierto."),
-                Err(error) => format!("xdg-open falló: {error} — PDF: {pdf_url}"),
-            });
-            return;
-        }
         self.pending_action = Some(TuiAction {
-            kind: ActionKind::GenerateCert,
-            values: vec![(0, machine.clone())],
-            machine,
+            kind: ActionKind::DownloadAllCerts,
+            values: vec![],
+            machine: "todos".to_string(),
         });
     }
 
@@ -945,10 +1026,6 @@ impl AppState {
         match self.tab {
             Tab::Maquinas => self.visible_machines().len(),
             Tab::Progreso => self.visible_hechas().len(),
-            Tab::Rankings => match self.ranking_view {
-                RankingView::Autores => self.data.ranking_autores.len(),
-                RankingView::Writeups => self.data.ranking_writeups.len(),
-            },
         }
     }
 
@@ -1141,7 +1218,8 @@ fn event_loop(
                 ActionKind::ToggleCompleted => format!("Actualizando {}...", action.machine),
                 ActionKind::SubmitWriteup => format!("Enviando writeup de {}...", action.machine),
                 ActionKind::SubmitRating => format!("Enviando valoración de {}...", action.machine),
-                ActionKind::GenerateCert => format!("Generando certificado de {}...", action.machine),
+                ActionKind::DownloadCert => format!("Descargando certificado de {}...", action.machine),
+                ActionKind::DownloadAllCerts => "Descargando todos los certificados...".to_string(),
             };
             app.fetching = Some(label);
             terminal.draw(|frame| crate::tui::render::draw(frame, app))?;
@@ -1401,10 +1479,6 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                     app.machine_sort = app.machine_sort.next();
                     app.reset_list_position();
                 }
-                Tab::Rankings => {
-                    app.ranking_view = app.ranking_view.toggle();
-                    app.reset_list_position();
-                }
                 Tab::Progreso => {
                     app.set_status("La ordenación no está disponible en Progreso.");
                 }
@@ -1446,11 +1520,11 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                     app.set_status(format!("Cancelando {}...", job.machine));
                 }
             }
-            KeyCode::Char('c') => app.generate_certificate_selected(),
+            KeyCode::Char('c') => app.certificate_action_selected(),
+            KeyCode::Char('C') => app.download_all_certs_selected(),
             KeyCode::Enter => match app.tab {
                 Tab::Maquinas => app.open_descripcion_popup(),
                 Tab::Progreso => app.open_selected_hecha_writeup(),
-                Tab::Rankings => {}
             },
             _ => {}
         },
@@ -1473,6 +1547,9 @@ mod tests {
             "estadisticas": {"puntos_writeups": 10, "ranking_writeups": 33, "ranking_creadores": 0},
             "maquinas_hechas": [
                 {"id": 1, "nombre": "Intranet", "dificultad": "Fácil", "writeup_url": "https://example.com/w"}
+            ],
+            "writeups": [
+                {"maquina": "Intranet", "url": "https://example.com/w", "tipo": "texto"}
             ]
         }"#;
         TuiData {
@@ -1503,30 +1580,6 @@ mod tests {
                     descripcion: String::new(),
                 },
             ],
-            ranking_autores: vec![
-                AuthorRank {
-                    id: 1,
-                    nombre: "d1se0".into(),
-                    maquinas: 50,
-                },
-                AuthorRank {
-                    id: 2,
-                    nombre: "M4RC0Sx22".into(),
-                    maquinas: 12,
-                },
-            ],
-            ranking_writeups: vec![
-                WriteupRank {
-                    id: 2,
-                    nombre: "someone".into(),
-                    puntos: 120,
-                },
-                WriteupRank {
-                    id: 3,
-                    nombre: "otro".into(),
-                    puntos: 80,
-                },
-            ],
         }
     }
 
@@ -1541,10 +1594,7 @@ mod tests {
         state.next_tab(); // Progreso (1 máquina hecha)
         assert_eq!(state.tab, Tab::Progreso);
         assert_eq!(state.visible_hechas().len(), 1);
-        state.next_tab(); // Rankings (2 autores)
-        state.move_down();
-        assert_eq!(state.selected, 1);
-        state.next_tab(); // vuelta a Máquinas
+        state.next_tab(); // vuelta a Máquinas (ciclo de 2 pestañas)
         assert_eq!(state.selected, 0);
         assert_eq!(state.scroll, 0);
     }
@@ -1592,20 +1642,6 @@ mod tests {
             self.machine_sort = self.machine_sort.next();
             self.reset_list_position();
         }
-    }
-
-    #[test]
-    fn ranking_view_toggles() {
-        let mut state = app();
-        state.next_tab();
-        state.next_tab();
-        assert_eq!(state.tab, Tab::Rankings);
-        assert_eq!(state.ranking_view, RankingView::Autores);
-        handle_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::empty()),
-        );
-        assert_eq!(state.ranking_view, RankingView::Writeups);
     }
 
     #[test]
@@ -1859,6 +1895,54 @@ mod tests {
 
         state.request_quit();
         assert!(state.quit);
+    }
+
+    #[test]
+    fn cert_state_matrix() {
+        let mut state = app();
+        // Intranet: completed + writeup published + certificate issued -> Ready.
+        assert!(matches!(
+            state.data.cert_state("Intranet"),
+            CertState::PendingAdmin
+        ));
+
+        // Dance Samba: neither completed nor writeup -> MissingBoth.
+        assert_eq!(state.data.cert_state("Dance Samba"), CertState::MissingBoth);
+
+        // Completed but without writeup -> MissingWriteup. Add such a machine.
+        state.data.profile.maquinas_hechas[0].certificado = None;
+        assert_eq!(state.data.cert_state("Intranet"), CertState::PendingAdmin);
+        state.data.profile.maquinas_hechas.push(
+            serde_json::from_value(serde_json::json!({
+                "id": 9, "nombre": "Second", "dificultad": "Fácil"
+            }))
+            .unwrap(),
+        );
+        assert_eq!(state.data.cert_state("Second"), CertState::MissingWriteup);
+
+        // Writeup published but not completed -> MissingCompleted.
+        state.data.profile.writeups.push(
+            serde_json::from_value(serde_json::json!({
+                "maquina": "Dance Samba", "url": "https://example.com/s", "tipo": "texto"
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            state.data.cert_state("Dance Samba"),
+            CertState::MissingCompleted
+        );
+
+        // Admin-issued -> Ready with the id.
+        state.data.profile.maquinas_hechas[0].certificado = Some(
+            serde_json::from_value(serde_json::json!({
+                "cert_id": "DL-ABC123", "pdf_url": "https://dockerlabs.es/api/certificado/pdf/DL-ABC123"
+            }))
+            .unwrap(),
+        );
+        match state.data.cert_state("Intranet") {
+            CertState::Ready { cert_id, .. } => assert_eq!(cert_id, "DL-ABC123"),
+            other => panic!("esperaba Ready, obtuve {other:?}"),
+        }
     }
 
     #[test]

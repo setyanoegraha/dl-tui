@@ -11,11 +11,21 @@ use crate::modules::session::DlSession;
 #[serde(default)]
 pub struct Profile {
     pub username: String,
+    pub perfil: PerfilInfo,
     pub progreso: Progreso,
     pub estadisticas: Estadisticas,
     pub maquinas_hechas: Vec<MaquinaFicha>,
     pub maquinas_creadas: Vec<MaquinaFicha>,
     pub writeups: Vec<WriteupRef>,
+}
+
+/// Public profile card data: the name shown on certificates, the biography
+/// and when the account joined.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PerfilInfo {
+    pub biografia: String,
+    pub miembro_desde: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

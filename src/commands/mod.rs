@@ -1,14 +1,12 @@
 //! Dashboard orchestration: session lifecycle, data fetching and the host
 //! closures handed to the TUI event loop.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::config::ConfigManager;
-use crate::modules::certificates::CertificateManager;
 use crate::modules::completed::CompletedManager;
 use crate::modules::profile::ProfileFetcher;
 use crate::modules::ratings::RatingManager;
-use crate::modules::rankings::RankingFetcher;
 use crate::modules::session::{login, login_with, DlSession};
 use crate::modules::writeups::WriteupManager;
 use crate::tui::{ActionKind, ActionReport, ReportKind, TuiAction, TuiData};
@@ -238,46 +236,180 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
                 status: format!("[✓] ¡Valoración enviada para {machine}!"),
             })
         }
-        ActionKind::GenerateCert => {
+        ActionKind::DownloadAllCerts => {
+            // Batch: fetch the profile, then download every issued
+            // certificate into <download_dir>/certificados.
+            let profile = ProfileFetcher::new(sessions.session())
+                .fetch(&sessions.username)
+                .await?;
+            let certs: Vec<(String, String, String)> = profile
+                .maquinas_hechas
+                .iter()
+                .filter_map(|f| {
+                    f.certificado
+                        .as_ref()
+                        .map(|c| (f.nombre.clone(), c.cert_id.clone(), c.pdf_url.clone()))
+                })
+                .collect();
+            if certs.is_empty() {
+                anyhow::bail!("Todavía no hay certificados emitidos.");
+            }
+
+            let dest_dir = ConfigManager::new()
+                .download_dir()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+                .join("certificados");
+            std::fs::create_dir_all(&dest_dir)
+                .with_context(|| format!("No se pudo crear {}", dest_dir.display()))?;
+
+            let client = reqwest::Client::builder()
+                .user_agent(concat!("dl-tui/", env!("CARGO_PKG_VERSION")))
+                .timeout(std::time::Duration::from_secs(120))
+                .build()?;
+            let mut downloaded = 0u64;
+            let mut skipped = 0u64;
+            let mut failed: Vec<String> = Vec::new();
+            for (machine, cert_id, pdf_url) in &certs {
+                let safe_machine: String = machine
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+                    .collect();
+                let path = dest_dir.join(format!("certificado-{safe_machine}-{cert_id}.pdf"));
+                if path.exists() {
+                    skipped += 1;
+                    continue;
+                }
+                let absolute = if pdf_url.starts_with("http") {
+                    pdf_url.clone()
+                } else {
+                    format!("https://dockerlabs.es{pdf_url}")
+                };
+                match client
+                    .get(&absolute)
+                    .send()
+                    .await
+                    .and_then(|r| r.error_for_status())
+                {
+                    Ok(resp) => match resp.bytes().await {
+                        Ok(bytes) => {
+                            if std::fs::write(&path, &bytes).is_ok() {
+                                downloaded += 1;
+                                continue;
+                            }
+                            failed.push(format!("{machine}: no se pudo escribir"));
+                        }
+                        Err(e) => failed.push(format!("{machine}: {e}")),
+                    },
+                    Err(e) => failed.push(format!("{machine}: {e}")),
+                }
+            }
+            open_in_browser(&dest_dir);
+            let mut entries = vec![(
+                ReportKind::Success,
+                format!(
+                    "✓ {downloaded} descargados · {skipped} ya existían · {} total",
+                    certs.len()
+                ),
+            )];
+            for failure in failed.iter().take(3) {
+                entries.push((ReportKind::Failure, failure.clone()));
+            }
+            let status = if failed.is_empty() {
+                format!(
+                    "[✓] {} certificados en {} (descargados: {downloaded}, ya había: {skipped}).",
+                    certs.len(),
+                    crate::tui::downloads::shorten_path(&dest_dir)
+                )
+            } else {
+                format!("[!] {downloaded} descargados, {} fallos — revisa el popup.", failed.len())
+            };
+            Ok(ActionReport {
+                title: " Certificados ".to_string(),
+                entries,
+                changed: false,
+                status,
+            })
+        }
+        ActionKind::DownloadCert => {
             let machine = action.machine.clone();
-            let manager = CertificateManager::new(sessions.session());
-            // The platform only issues the certificate once the writeup is
-            // published AND the machine is marked completed — explain that
-            // instead of surfacing a raw server error.
-            if !manager.available(&machine).await? {
+            let cert_id = action.values[0].1.clone();
+            let pdf_url = action.values[1].1.clone();
+
+            // Certificates are admin-issued; here we only fetch the issued
+            // PDF into the download folder and open the local copy.
+            let cfg = ConfigManager::new();
+            let dest_dir = cfg
+                .download_dir()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+                .join("certificados");
+            std::fs::create_dir_all(&dest_dir)
+                .with_context(|| format!("No se pudo crear {}", dest_dir.display()))?;
+            let safe_machine: String = machine
+                .chars()
+                .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+                .collect();
+            let filename = format!("certificado-{safe_machine}-{cert_id}.pdf");
+            let path = dest_dir.join(&filename);
+            if path.exists() {
+                open_in_browser(&path);
                 return Ok(ActionReport {
                     title: format!(" Certificado — {machine} "),
-                    entries: vec![
-                        (ReportKind::Failure, "Certificado: ✗ AÚN NO DISPONIBLE".to_string()),
-                        (
-                            ReportKind::Info,
-                            "Requiere: 1) publicar tu writeup (w) y 2) marcar la máquina como completada (m).".to_string(),
-                        ),
-                    ],
+                    entries: vec![(
+                        ReportKind::Success,
+                        format!("Certificado {cert_id}: ya descargado — {}", path.display()),
+                    )],
                     changed: false,
-                    status: format!(
-                        "[!] Certificado de {machine} aún no disponible — falta el writeup o marcarla completada."
-                    ),
+                    status: format!("[✓] Certificado de {machine} ya estaba descargado — reabierto."),
                 });
             }
-            let pdf_url = manager.generate(&machine).await?;
-            open_in_browser(&pdf_url);
+
+            let client = reqwest::Client::builder()
+                .user_agent(concat!("dl-tui/", env!("CARGO_PKG_VERSION")))
+                .timeout(std::time::Duration::from_secs(120))
+                .build()?;
+            // The profile may carry the PDF as a relative path.
+            let absolute = if pdf_url.starts_with("http") {
+                pdf_url.clone()
+            } else if pdf_url.starts_with('/') {
+                format!("https://dockerlabs.es{pdf_url}")
+            } else {
+                format!("https://dockerlabs.es/{pdf_url}")
+            };
+            let bytes = client
+                .get(&absolute)
+                .send()
+                .await
+                .context("Error de conexión al bajar el certificado")?
+                .error_for_status()
+                .context("El servidor devolvió un error al bajar el certificado")?
+                .bytes()
+                .await?;
+            std::fs::write(&path, &bytes)
+                .with_context(|| format!("No se pudo escribir {}", path.display()))?;
+            open_in_browser(&path);
             Ok(ActionReport {
                 title: format!(" Certificado — {machine} "),
                 entries: vec![
-                    (ReportKind::Success, "Certificado: ✓ GENERADO".to_string()),
-                    (ReportKind::Info, pdf_url),
+                    (
+                        ReportKind::Success,
+                        format!("Certificado {cert_id}: ✓ DESCARGADO"),
+                    ),
+                    (ReportKind::Info, path.display().to_string()),
                 ],
                 changed: false,
-                status: format!("[✓] Certificado de {machine} generado — PDF abierto en el navegador."),
+                status: format!(
+                    "[✓] Certificado de {machine} descargado ({}).",
+                    crate::tui::downloads::fmt_bytes(bytes.len() as u64)
+                ),
             })
         }
     }
 }
 
-fn open_in_browser(url: &str) {
+/// Opens a local file or folder with the system opener.
+fn open_in_browser(path: &std::path::Path) {
     let _ = std::process::Command::new("xdg-open")
-        .arg(url)
+        .arg(path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
@@ -296,14 +428,5 @@ async fn fetch_tui_data(sessions: &SessionCache) -> Result<TuiData> {
         .get_catalog()
         .await?;
 
-    let rankings = RankingFetcher::new(session.clone());
-    let ranking_autores = rankings.autores().await.unwrap_or_default();
-    let ranking_writeups = rankings.writeups().await.unwrap_or_default();
-
-    Ok(TuiData {
-        profile,
-        catalog,
-        ranking_autores,
-        ranking_writeups,
-    })
+    Ok(TuiData { profile, catalog })
 }
