@@ -303,7 +303,10 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
                 "[ Perfil ]",
                 Style::new().fg(ACCENT).bold(),
             )),
-            Line::from(format!("  Nombre       : {}", profile.username)),
+            Line::from(format!(
+                "  Nombre (diplomas): {}",
+                profile.username
+            )),
             Line::from(format!("  Miembro desde: {member_since}")),
             Line::from(format!(
                 "  Biografía    : {}",
@@ -345,19 +348,19 @@ fn draw_progreso(frame: &mut Frame, area: Rect, app: &mut AppState) {
     let items: Vec<ListItem> = visible
         .iter()
         .map(|m| {
-            let cert = if m.certificado.is_some() { "  ✔ cert" } else { "" };
             let date = m
                 .completada_el
                 .as_deref()
                 .and_then(|d| d.split('T').next())
                 .unwrap_or("");
+            let cert_tag = match &m.certificado {
+                Some(cert) => format!("  ✔ {}", cert.cert_id),
+                None => String::new(),
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(" ● ", Style::new().fg(OK)),
                 Span::styled(m.nombre.clone(), Style::new().fg(BRIGHT).bold()),
-                Span::styled(
-                    format!("  — {date}{cert}"),
-                    Style::new().dim(),
-                ),
+                Span::styled(format!("  — {date}{cert_tag}"), Style::new().dim()),
             ]))
         })
         .collect();
