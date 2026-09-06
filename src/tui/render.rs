@@ -165,7 +165,7 @@ fn draw_maquinas(frame: &mut Frame, area: Rect, app: &mut AppState) {
             Constraint::Length(18),
             Constraint::Length(11),
             Constraint::Length(20),
-            Constraint::Length(16),
+            Constraint::Length(22),
             Constraint::Length(11),
             Constraint::Length(3),
             Constraint::Fill(1),
