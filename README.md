@@ -2,6 +2,8 @@
 
 ### Dashboard no oficial de DockerLabs — unofficial DockerLabs terminal dashboard
 
+<p><strong>English</strong> · <a href="README.es.md">Español</a></p>
+
 <p align="center">
   <img src="assets/dashboard-maquinas.png" alt="dl-tui — Máquinas tab with Nord theme" width="100%">
 </p>
