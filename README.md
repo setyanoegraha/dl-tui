@@ -39,13 +39,13 @@ Grab the archive for your platform from the [Releases](https://github.com/setyan
 
 | Platform | Archive |
 | :--- | :--- |
-| Linux x86_64 | `dl-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS Apple Silicon | `dl-v0.1.0-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `dl-v0.1.0-x86_64-apple-darwin.tar.gz` |
-| Windows x86_64 | `dl-v0.1.0-x86_64-pc-windows-msvc.zip` |
+| Linux x86_64 | `dl-v0.1.1-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `dl-v0.1.1-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `dl-v0.1.1-x86_64-apple-darwin.tar.gz` |
+| Windows x86_64 | `dl-v0.1.1-x86_64-pc-windows-msvc.zip` |
 
 ```bash
-tar xzf dl-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf dl-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
 install -m 755 dl ~/.local/bin/dl
 ```
 

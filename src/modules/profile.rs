@@ -21,7 +21,6 @@ pub struct Profile {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Progreso {
-    pub catalogo: u64,
     pub maquinas_totales: u64,
     pub maquinas_hechas: u64,
     pub porcentaje: f64,
@@ -43,19 +42,40 @@ pub struct Estadisticas {
     pub ranking_creadores: u64,
 }
 
+/// Treats an explicit JSON `null` like a missing field for `String` props.
+fn string_or_null<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt: Option<String> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
+
 /// A machine ficha as embedded in the profile lists; extra fields only
 /// appear on `maquinas_hechas` (completion date, writeup, certificate).
+/// Several string fields can be `null` for some machines.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MaquinaFicha {
     pub id: u64,
+    #[serde(deserialize_with = "string_or_null")]
     pub nombre: String,
+    #[serde(deserialize_with = "string_or_null")]
     pub dificultad: String,
+    #[serde(deserialize_with = "string_or_null")]
     pub clase: String,
+    #[serde(deserialize_with = "string_or_null")]
     pub color: String,
+    #[serde(deserialize_with = "string_or_null")]
     pub categoria: String,
+    #[serde(deserialize_with = "string_or_null")]
     pub autor: String,
+    #[serde(deserialize_with = "string_or_null")]
+    pub enlace_autor: String,
+    #[serde(deserialize_with = "string_or_null")]
     pub fecha: String,
+    #[serde(deserialize_with = "string_or_null")]
+    pub descripcion: String,
     pub completada_el: Option<String>,
     pub writeup_url: Option<String>,
     pub certificado: Option<CertificadoInfo>,
@@ -68,12 +88,14 @@ pub struct CertificadoInfo {
     pub pdf_url: String,
 }
 
+/// One of the user's published writeups (`writeups[]` in the profile).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct WriteupRef {
-    pub nombre: String,
+    pub maquina: String,
     pub url: String,
-    pub puntos: Option<u64>,
+    pub tipo: String, // "texto" | "video"
+    pub publicado_el: Option<String>,
 }
 
 pub struct ProfileFetcher {
@@ -103,7 +125,7 @@ mod tests {
             "username": "noneofyour",
             "perfil": {"id": 7, "rol": "jugador"},
             "progreso": {
-                "catalogo": 201,
+                "catalogo": "docker",
                 "maquinas_totales": 201,
                 "maquinas_hechas": 42,
                 "porcentaje": 20.9,
@@ -122,7 +144,7 @@ mod tests {
                 }
             ],
             "maquinas_creadas": [],
-            "writeups": [{"nombre": "Intranet writeup", "url": "https://example.com/w.md", "puntos": 10}]
+            "writeups": [{"maquina": "Whoiam", "url": "https://example.com/whoiam.md", "tipo": "texto", "publicado_el": "2026-08-08T07:32:31Z"}]
         }"#;
         let profile: Profile = serde_json::from_str(json).unwrap();
         assert_eq!(profile.username, "noneofyour");
@@ -135,6 +157,7 @@ mod tests {
             hecha.certificado.as_ref().unwrap().cert_id,
             "DL-ABC123"
         );
-        assert_eq!(profile.writeups[0].puntos, Some(10));
+        assert_eq!(profile.writeups[0].maquina, "Whoiam");
+        assert_eq!(profile.writeups[0].tipo, "texto");
     }
 }

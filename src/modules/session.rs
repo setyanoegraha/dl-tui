@@ -52,19 +52,26 @@ impl DlSession {
 
     async fn fetch_csrf(&self) -> Option<String> {
         let html = self.get("/").await.ok()?;
-        let doc = scraper::Html::parse_document(&html);
-        let sel = Selector::parse("meta[name='csrf-token']").ok()?;
-        doc.select(&sel)
-            .next()?
-            .value()
-            .attr("content")
-            .map(str::to_string)
+        csrf_from(&html)
     }
 }
 
+/// Extracts the CSRF token from a page's `<meta name="csrf-token">`.
+fn csrf_from(html: &str) -> Option<String> {
+    let doc = scraper::Html::parse_document(html);
+    let sel = Selector::parse("meta[name='csrf-token']").ok()?;
+    doc.select(&sel)
+        .next()?
+        .value()
+        .attr("content")
+        .map(str::to_string)
+}
+
 /// Logs in with explicit credentials and returns the authenticated session.
-/// `POST /auth/login` answers `{"success":true,...}` and sets the session
-/// cookie; afterwards the CSRF token is captured from the homepage.
+/// The production contract (as called by the site itself):
+///   1. GET /login -> grab the CSRF token from the meta tag
+///   2. POST /api/auth/login with `X-CSRFToken` + JSON {username, password}
+///   3. `{"success":true,...}` sets the session cookie
 pub async fn login_with(username: &str, password: &str) -> Result<DlSession> {
     let client = Client::builder()
         .user_agent(USER_AGENT)
@@ -75,9 +82,22 @@ pub async fn login_with(username: &str, password: &str) -> Result<DlSession> {
         .build()
         .context("No se pudo crear el cliente HTTP")?;
 
-    let resp = client
-        .post(format!("{BASE_URL}/auth/login"))
-        .json(&serde_json::json!({"username": username, "password": password}))
+    let login_page = client
+        .get(format!("{BASE_URL}/login"))
+        .send()
+        .await
+        .context("Error de conexión")?
+        .text()
+        .await?;
+    let csrf = csrf_from(&login_page);
+
+    let mut req = client
+        .post(format!("{BASE_URL}/api/auth/login"))
+        .json(&serde_json::json!({"username": username, "password": password}));
+    if let Some(token) = &csrf {
+        req = req.header("X-CSRFToken", token);
+    }
+    let resp = req
         .send()
         .await
         .context("Error de conexión")?;
@@ -87,12 +107,14 @@ pub async fn login_with(username: &str, password: &str) -> Result<DlSession> {
         return Err(crate::modules::DlError::AuthFailed.into());
     }
 
-    let session = DlSession { client, csrf: None };
-    let csrf = session.fetch_csrf().await;
-    Ok(DlSession {
-        client: session.client,
+    // Re-capture the CSRF token for authenticated POSTs (it may rotate on
+    // login); fall back to the pre-login one.
+    let probe = DlSession {
+        client: client.clone(),
         csrf,
-    })
+    };
+    let csrf = probe.fetch_csrf().await.or(probe.csrf);
+    Ok(DlSession { client, csrf })
 }
 
 /// Logs in using stored credentials.
@@ -116,5 +138,35 @@ mod tests {
             .and_then(|m| m.value().attr("content"))
             .unwrap();
         assert_eq!(token, "abc123");
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use crate::modules::machines::MachineScraper;
+    use crate::modules::profile::ProfileFetcher;
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore] // live: DL_USER=... DL_PASS=... cargo test live_login -- --ignored --nocapture
+    async fn live_login_and_fetch() {
+        let username = std::env::var("DL_USER").unwrap();
+        let password = std::env::var("DL_PASS").unwrap();
+        let session = match login_with(&username, &password).await {
+            Ok(s) => s,
+            Err(e) => {
+                println!("LOGIN ERROR: {e:#}");
+                panic!("login failed");
+            }
+        };
+        println!("login OK");
+        match ProfileFetcher::new(session.clone()).fetch(&username).await {
+            Ok(p) => println!("profile OK: {} — {}/{} máquinas", p.username, p.progreso.maquinas_hechas, p.progreso.maquinas_totales),
+            Err(e) => println!("PROFILE ERROR: {e:#}"),
+        }
+        match MachineScraper::new(session).get_catalog().await {
+            Ok(c) => println!("catalog OK: {} máquinas", c.len()),
+            Err(e) => println!("CATALOG ERROR: {e:#}"),
+        }
     }
 }
