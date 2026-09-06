@@ -85,7 +85,7 @@ Three keyboard-driven tabs — **Máquinas**, **Progreso** and **Rankings**:
 
 | Keys | Action |
 | :--- | :--- |
-| `Tab` / `←` `→` | Switch tabs |
+| `Tab` / `←` `→` | Switch tabs (also shown as `Tab pestañas` in the footer) |
 | `↑` `↓` / `j` `k` | Move selection |
 | `g` / `Home` | Jump to the top of the list |
 | `/` | Filter the current list (type to narrow, `Enter` keeps it, `Esc` clears & exits) |
@@ -93,10 +93,9 @@ Three keyboard-driven tabs — **Máquinas**, **Progreso** and **Rankings**:
 | `d` | **Máquinas** — download popup: pick the destination folder (remembered across sessions), live progress in the Descargas overlay |
 | `w` | **Máquinas** — community writeups popup: `j`/`k` select, `Enter` opens the link, `u` submits your own writeup |
 | `v` | **Máquinas** — rating averages popup; `Enter` opens the form to send your 4 scores (1–5) |
-| `m` | **Máquinas** — toggle the machine as completed (the platform's solved mechanic) |
+| `m` | **Máquinas** — toggle the machine as completed (the platform's solved mechanic). The ✓ column marks machines already completed |
 | `i` / `Enter` | **Máquinas** — description popup with the full machine details |
-| `c` | **Progreso** — generate the certificate of the selected completed machine (PDF opens in the browser) |
-| `V` | Verify any certificate id (`DL-XXXXXX`) |
+| `c` | **Progreso** — open the certificate PDF of the selected machine, or generate it (requires writeup published + machine completed) |
 | `a` | Account popup: `Enter` switch account, `l` logout |
 | `o` | Toggle the Descargas overlay (downloads keep running when closed) |
 | `c` | In the Descargas overlay — cancel the most recent active download |

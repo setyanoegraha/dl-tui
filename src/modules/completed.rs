@@ -20,7 +20,7 @@ impl CompletedManager {
         let body = self
             .session
             .post_json(
-                "/toggle_completed_machine",
+                "/api/toggle_completed_machine",
                 &serde_json::json!({"machine_name": machine}),
             )
             .await?;

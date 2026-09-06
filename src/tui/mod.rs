@@ -25,8 +25,6 @@ pub enum PopupKind {
     WriteupSubmit,
     /// Four 1-5 score fields.
     RatingSubmit,
-    /// Certificate id (DL-XXXXXX) verification input.
-    CertVerify,
     /// Login credentials popup (first run, stale password, account switch).
     Config,
     /// Account overview (`a`): switch (`Enter`) or logout (`l`).
@@ -390,7 +388,6 @@ pub struct AppState {
     pub pending_config: Option<(String, String)>,
     pub pending_writeups: Option<String>,
     pub pending_rating: Option<String>,
-    pub pending_verify: Option<String>,
     pub download_queue: std::collections::VecDeque<(String, u32, PathBuf)>,
     pub download_jobs: Vec<std::sync::Arc<downloads::DownloadJob>>,
     pub report: Option<ActionReport>,
@@ -428,7 +425,6 @@ impl AppState {
             pending_config: None,
             pending_writeups: None,
             pending_rating: None,
-            pending_verify: None,
             download_queue: std::collections::VecDeque::new(),
             download_jobs: Vec::new(),
             report: None,
@@ -751,24 +747,6 @@ impl AppState {
         });
     }
 
-    /// Opens the certificate-id verification input popup (`V`).
-    pub fn open_cert_verify_popup(&mut self) {
-        if self.popup.is_some() || self.report.is_some() {
-            return;
-        }
-        self.popup = Some(Popup {
-            kind: PopupKind::CertVerify,
-            machine: String::new(),
-            machine_id: 0,
-            buffers: vec![String::new()],
-            field: 0,
-            notice: None,
-            readonly: false,
-            text: None,
-            completions: Vec::new(),
-        });
-    }
-
     /// Queues the completed-toggle of the selected machine (`m`, Máquinas).
     pub fn toggle_completed_selected(&mut self) {
         if self.pending_action.is_some() || self.popup.is_some() || self.report.is_some() {
@@ -789,8 +767,10 @@ impl AppState {
         });
     }
 
-    /// Queues certificate generation for the selected completed machine
-    /// (`c`, Progreso).
+    /// Certificate action for the selected machine in Progreso (`c`): when
+    /// the profile already carries the certificate, open its PDF directly;
+    /// otherwise queue generation (which first checks availability on the
+    /// platform: writeup published + machine marked completed).
     pub fn generate_certificate_selected(&mut self) {
         if self.pending_action.is_some() || self.popup.is_some() || self.report.is_some() {
             return;
@@ -799,10 +779,25 @@ impl AppState {
             self.set_status("Los certificados están disponibles en la pestaña Progreso.");
             return;
         }
-        let Some(machine) = self.selected_machine_name() else {
+        let Some(ficha) = self.visible_hechas().get(self.selected).copied() else {
             self.set_status("Nada seleccionado.");
             return;
         };
+        let machine = ficha.nombre.clone();
+        if let Some(cert) = &ficha.certificado {
+            let cert_id = cert.cert_id.clone();
+            let pdf_url = cert.pdf_url.clone();
+            let opened = std::process::Command::new("xdg-open")
+                .arg(&pdf_url)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            self.set_status(match opened {
+                Ok(_) => format!("[✓] Certificado {cert_id} de {machine} — PDF abierto."),
+                Err(error) => format!("xdg-open falló: {error} — PDF: {pdf_url}"),
+            });
+            return;
+        }
         self.pending_action = Some(TuiAction {
             kind: ActionKind::GenerateCert,
             values: vec![(0, machine.clone())],
@@ -942,15 +937,6 @@ impl AppState {
                         .collect(),
                 });
             }
-            PopupKind::CertVerify => {
-                let id = values.first().map(|(_, v)| v.clone()).unwrap_or_default();
-                if id.is_empty() {
-                    self.popup = Some(popup);
-                    self.set_status("Indica el ID del certificado (DL-XXXXXX).");
-                    return;
-                }
-                self.pending_verify = Some(id);
-            }
             _ => {}
         }
     }
@@ -1038,7 +1024,6 @@ pub struct Host<'a> {
     pub run_action: &'a dyn Fn(TuiAction) -> Result<ActionReport>,
     pub run_writeups_fetch: &'a dyn Fn(&str) -> Result<Vec<WriteupEntry>>,
     pub run_rating_fetch: &'a dyn Fn(&str) -> Result<crate::modules::ratings::MachineRating>,
-    pub run_verify: &'a dyn Fn(&str) -> Result<ActionReport>,
     pub run_config: &'a dyn Fn(&str, &str) -> Result<()>,
     pub logout: &'a dyn Fn() -> Result<()>,
     /// Set when the next loop iteration must (re)fetch all data; `run()`
@@ -1220,24 +1205,6 @@ fn event_loop(
                 Err(error) => {
                     app.fetching = None;
                     app.set_status(format!("Error al cargar valoración: {error:#}"));
-                }
-            }
-        }
-
-        // Certificate-id verification (`V`).
-        if let Some(cert_id) = app.pending_verify.take() {
-            app.fetching = Some(format!("Verificando certificado {cert_id}..."));
-            terminal.draw(|frame| crate::tui::render::draw(frame, app))?;
-
-            match (host.run_verify)(&cert_id) {
-                Ok(report) => {
-                    app.fetching = None;
-                    app.set_status(report.status.clone());
-                    app.report = Some(report);
-                }
-                Err(error) => {
-                    app.fetching = None;
-                    app.set_status(format!("Error al verificar: {error:#}"));
                 }
             }
         }
@@ -1480,7 +1447,6 @@ fn handle_key(app: &mut AppState, key: crossterm::event::KeyEvent) {
                 }
             }
             KeyCode::Char('c') => app.generate_certificate_selected(),
-            KeyCode::Char('V') => app.open_cert_verify_popup(),
             KeyCode::Enter => match app.tab {
                 Tab::Maquinas => app.open_descripcion_popup(),
                 Tab::Progreso => app.open_selected_hecha_writeup(),

@@ -78,7 +78,6 @@ pub async fn tui_cmd() -> Result<()> {
     let action_sessions = shared.clone();
     let writeups_sessions = shared.clone();
     let ratings_sessions = shared.clone();
-    let verify_sessions = shared.clone();
     let config_sessions = shared.clone();
     let logout_sessions = shared.clone();
 
@@ -124,15 +123,6 @@ pub async fn tui_cmd() -> Result<()> {
             })
         })
     };
-    let run_verify = move |cert_id: &str| {
-        let cert_id = cert_id.to_string();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let sessions = take_session(&verify_sessions)?;
-                verify_certificate(&sessions, &cert_id).await
-            })
-        })
-    };
     let run_config = move |username: &str, password: &str| {
         let username = username.to_string();
         let password = password.to_string();
@@ -152,7 +142,6 @@ pub async fn tui_cmd() -> Result<()> {
         run_action: &run_action,
         run_writeups_fetch: &run_writeups_fetch,
         run_rating_fetch: &run_rating_fetch,
-        run_verify: &run_verify,
         run_config: &run_config,
         logout: &logout,
         pending_fetch: false,
@@ -283,34 +272,6 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
                 status: format!("[✓] Certificado de {machine} generado — PDF abierto en el navegador."),
             })
         }
-    }
-}
-
-/// Publicly verifies a certificate id; returns the result popup content.
-async fn verify_certificate(sessions: &SessionCache, cert_id: &str) -> Result<ActionReport> {
-    let certificate = CertificateManager::new(sessions.session())
-        .verify(cert_id)
-        .await?;
-    if certificate.valid {
-        Ok(ActionReport {
-            title: format!(" Certificado {cert_id} "),
-            entries: vec![(
-                ReportKind::Success,
-                format!(
-                    "VÁLIDO — {} · {} ({})",
-                    certificate.username, certificate.machine, certificate.dificultad
-                ),
-            )],
-            changed: false,
-            status: format!("[✓] Certificado {cert_id} válido."),
-        })
-    } else {
-        Ok(ActionReport {
-            title: format!(" Certificado {cert_id} "),
-            entries: vec![(ReportKind::Failure, format!("INVÁLIDO: {}", certificate.message))],
-            changed: false,
-            status: format!("[!] Certificado {cert_id} inválido."),
-        })
     }
 }
 

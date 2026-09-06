@@ -58,7 +58,7 @@ impl RatingManager {
         let body = self
             .session
             .post_json(
-                "/rate_machine",
+                "/api/rate_machine",
                 &serde_json::json!({
                     "maquina_nombre": machine,
                     "dificultad_score": dificultad,

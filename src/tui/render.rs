@@ -500,7 +500,7 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
 
     let height = match popup.kind {
         PopupKind::Config => 10,
-        PopupKind::Descarga | PopupKind::CertVerify => 7,
+        PopupKind::Descarga => 7,
         PopupKind::WriteupSubmit => 9,
         PopupKind::RatingSubmit => 12,
         _ => 8,
@@ -515,7 +515,6 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
     let height = height + completion_lines as u16 + u16::from(popup.notice.is_some());
     let width = match popup.kind {
         PopupKind::RatingSubmit => 64,
-        PopupKind::CertVerify => 60,
         _ => 74,
     };
     let box_area = popup_area(area, width, height);
@@ -546,11 +545,6 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
                 "Diversión (1-5):",
             ],
             "Enter enviar · ↑↓/Tab cambiar campo · Esc cancelar",
-        ),
-        PopupKind::CertVerify => (
-            " Verificar certificado ".to_string(),
-            vec!["ID (DL-XXXXXX):"],
-            "Enter verificar · Esc cancelar",
         ),
         _ => unreachable!("info popups handled above"),
     };
@@ -846,7 +840,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &AppState) {
                     Tab::Progreso => "jk mover · / filtrar · Enter writeup · c certificado · ".to_string(),
                     Tab::Rankings => "jk mover · s alternar · ".to_string(),
                 };
-                let common = "a cuenta · V verificar cert · r refrescar · q salir";
+                let common = "Tab pestañas · a cuenta · r refrescar · q salir";
                 format!("{list_keys}{common}")
             }
         }
