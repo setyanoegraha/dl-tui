@@ -718,6 +718,13 @@ fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
                     format!("… {}  resolviendo enlace…", job.machine),
                     Style::new().dim(),
                 ),
+                Span::styled(
+                    format!(
+                        "  → {}",
+                        super::downloads::shorten_path(&job.dest_dir)
+                    ),
+                    Style::new().dim(),
+                ),
             ]),
             Phase::Downloading => {
                 let ratio = if state.total > 0 {
@@ -746,6 +753,13 @@ fn draw_downloads(frame: &mut Frame, area: Rect, app: &AppState) {
                             super::downloads::fmt_bytes(state.speed_bps),
                         ),
                         Style::new().fg(BRIGHT),
+                    ),
+                    Span::styled(
+                        format!(
+                            "  → {}",
+                            super::downloads::shorten_path(&job.dest_dir)
+                        ),
+                        Style::new().dim(),
                     ),
                 ])
             }

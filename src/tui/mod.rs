@@ -1026,20 +1026,26 @@ fn event_loop(
 
         // Start queued/pending downloads as slots free up.
         if let Some((machine, id, dir)) = app.pending_download.take() {
-            match downloads::start_download(machine.clone(), id, dir) {
+            match downloads::start_download(machine.clone(), id, dir.clone()) {
                 Ok(job) => {
                     app.download_jobs.push(std::sync::Arc::new(job));
-                    app.set_status(format!("[↓] Descarga de {machine} iniciada."));
+                    app.set_status(format!(
+                        "[↓] Descarga de {machine} iniciada → {}",
+                        downloads::shorten_path(&dir)
+                    ));
                 }
                 Err(error) => app.set_status(format!("Error al descargar: {error:#}")),
             }
         }
         if app.active_downloads() < downloads::PARALLEL_DOWNLOADS {
             while let Some((machine, id, dir)) = app.download_queue.pop_front() {
-                match downloads::start_download(machine.clone(), id, dir) {
+                match downloads::start_download(machine.clone(), id, dir.clone()) {
                     Ok(job) => {
                         app.download_jobs.push(std::sync::Arc::new(job));
-                        app.set_status(format!("[↓] Descarga de {machine} iniciada."));
+                        app.set_status(format!(
+                            "[↓] Descarga de {machine} iniciada → {}",
+                            downloads::shorten_path(&dir)
+                        ));
                     }
                     Err(error) => app.set_status(format!("Error al descargar: {error:#}")),
                 }
@@ -1704,6 +1710,7 @@ mod tests {
         let mut state = app();
         state.download_jobs = vec![std::sync::Arc::new(crate::tui::downloads::DownloadJob {
             machine: "Intranet".into(),
+            dest_dir: "/tmp".into(),
             state: std::sync::Arc::new(std::sync::Mutex::new(
                 crate::tui::downloads::DownloadState::default(),
             )),

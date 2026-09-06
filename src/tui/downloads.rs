@@ -3,7 +3,7 @@
 //! no terminal output, no channel loss. The event loop owns starting,
 //! queueing (max 2 parallel) and cancelling.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -72,6 +72,9 @@ impl DownloadState {
 #[derive(Debug)]
 pub struct DownloadJob {
     pub machine: String,
+    /// Destination directory chosen in the download popup; shown live in
+    /// the Descargas overlay.
+    pub dest_dir: PathBuf,
     pub state: Arc<Mutex<DownloadState>>,
     pub cancel: Arc<AtomicBool>,
 }
@@ -110,6 +113,7 @@ pub fn start_download(machine: String, machine_id: u32, dest_dir: PathBuf) -> Re
 
     let task_state = state.clone();
     let task_cancel = cancel.clone();
+    let task_dest = dest_dir.clone();
     // The task runs detached: cancellation goes through the shared flag and
     // `.part` cleanup through DownloadJob::remove_part.
     tokio::spawn(async move {
@@ -130,7 +134,7 @@ pub fn start_download(machine: String, machine_id: u32, dest_dir: PathBuf) -> Re
 
         let outcome = async {
             let url = resolve_download_url(machine_id).await?;
-            download_zip(&url, &dest_dir, &hooks).await
+            download_zip(&url, &task_dest, &hooks).await
         }
         .await;
 
@@ -153,9 +157,24 @@ pub fn start_download(machine: String, machine_id: u32, dest_dir: PathBuf) -> Re
 
     Ok(DownloadJob {
         machine,
+        dest_dir,
         state,
         cancel,
     })
+}
+
+/// Human-friendly path: the home prefix collapses to `~`.
+pub fn shorten_path(path: &Path) -> String {
+    if let Some(home) = home::home_dir() {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            let rest = rest.display().to_string();
+            if rest.is_empty() {
+                return "~".to_string();
+            }
+            return format!("~{}{rest}", std::path::MAIN_SEPARATOR);
+        }
+    }
+    path.display().to_string()
 }
 
 /// Human-readable byte size: "0 B", "842.1 KB", "1.9 GB", ...
@@ -191,6 +210,7 @@ mod tests {
     fn job_defaults_to_resolving_and_can_be_cancelled() {
         let job = DownloadJob {
             machine: "Intranet".into(),
+            dest_dir: PathBuf::from("/tmp"),
             state: Arc::new(Mutex::new(DownloadState::default())),
             cancel: Arc::new(AtomicBool::new(false)),
         };
@@ -198,5 +218,15 @@ mod tests {
         job.request_cancel();
         // Flag is set even though no task consumed it yet.
         assert!(job.is_active());
+    }
+
+    #[test]
+    fn shorten_path_collapses_home() {
+        if let Some(home) = home::home_dir() {
+            let inside = home.join("vm").join("maquinas");
+            let expected = format!("~{s}vm{s}maquinas", s = std::path::MAIN_SEPARATOR);
+            assert_eq!(shorten_path(&inside), expected);
+        }
+        assert_eq!(shorten_path(Path::new("/opt/data")), "/opt/data");
     }
 }
