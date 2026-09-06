@@ -940,8 +940,8 @@ pub fn format_rating(rating: &MachineRating) -> String {
             rating.average, rating.count
         ),
     ];
-    if let Some(user) = rating.user_rating {
-        lines.push(format!("Tu valoración: {user}"));
+    if let Some(user) = &rating.user_rating {
+        lines.push(format!("Tu valoración: {}", user.summary()));
     }
     lines.join("\n")
 }

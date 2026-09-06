@@ -6,13 +6,34 @@ use serde::Deserialize;
 
 use crate::modules::session::DlSession;
 
+/// The user's own rating, returned by the API as an object once they have
+/// rated the machine (null before that).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct UserRating {
+    pub dificultad: u64,
+    pub aprendizaje: u64,
+    pub recomendaria: u64,
+    pub diversion: u64,
+}
+
+impl UserRating {
+    /// Compact "3/3/4/4" style rendering of the user's own scores.
+    pub fn summary(&self) -> String {
+        format!(
+            "{}/{}/{}/{}",
+            self.dificultad, self.aprendizaje, self.recomendaria, self.diversion
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MachineRating {
     pub average: f64,
     pub count: u64,
     pub details: RatingDetails,
-    pub user_rating: Option<u64>,
+    pub user_rating: Option<UserRating>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -79,5 +100,31 @@ impl RatingManager {
                 .unwrap_or("El servidor rechazó la valoración.");
             bail!("{message}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rating_with_object_user_rating() {
+        let json = r#"{"average":3.5,"count":2,"details":{"dificultad":3.0,"aprendizaje":3.0,
+            "recomendaria":4.0,"diversion":4.0},
+            "user_rating":{"dificultad":3,"aprendizaje":3,"recomendaria":4,"diversion":4}}"#;
+        let rating: MachineRating = serde_json::from_str(json).unwrap();
+        assert_eq!(rating.count, 2);
+        assert_eq!(
+            rating.user_rating.unwrap().summary(),
+            "3/3/4/4"
+        );
+    }
+
+    #[test]
+    fn parses_rating_with_null_user_rating() {
+        let json = r#"{"average":3.5,"count":1,"details":{"dificultad":3.0,"aprendizaje":3.0,
+            "recomendaria":4.0,"diversion":4.0},"user_rating":null}"#;
+        let rating: MachineRating = serde_json::from_str(json).unwrap();
+        assert!(rating.user_rating.is_none());
     }
 }
