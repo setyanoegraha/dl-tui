@@ -123,11 +123,13 @@ impl ProfileFetcher {
     }
 
     pub async fn fetch(&self, username: &str) -> Result<Profile> {
-        let body = self.session.get(&format!("/u/{username}")).await?;
-        let mut profile: Profile = serde_json::from_str(&body)?;
-        // The diploma name is only rendered inside the /dashboard form.
-        let dashboard = self.session.get("/dashboard").await?;
-        profile.perfil.nombre_diplomas = parse_diploma_name(&dashboard);
+        // The profile JSON and the /dashboard form are independent GETs.
+        let profile_path = format!("/u/{username}");
+        let profile_body = self.session.get(&profile_path);
+        let dashboard = self.session.get("/dashboard");
+        let (profile_body, dashboard) = tokio::join!(profile_body, dashboard);
+        let mut profile: Profile = serde_json::from_str(&profile_body?)?;
+        profile.perfil.nombre_diplomas = parse_diploma_name(&dashboard?);
         Ok(profile)
     }
 }
