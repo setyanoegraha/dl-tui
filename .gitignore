@@ -5,3 +5,6 @@
 *.tar
 *.ova
 .zcode/
+
+# tooling caches
+.repowise/

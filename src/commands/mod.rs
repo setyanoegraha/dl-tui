@@ -46,6 +46,15 @@ fn take_session(shared: &SharedSession) -> Result<SessionCache> {
         .ok_or_else(|| anyhow::anyhow!("Sin sesión: no hay cuenta de DockerLabs configurada."))
 }
 
+/// Whether any cause in the chain is the login rejection error.
+fn is_auth_failed(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<crate::modules::DlError>()
+            .is_some_and(|e| matches!(e, crate::modules::DlError::AuthFailed))
+    })
+}
+
 pub async fn tui_cmd() -> Result<()> {
     // Bare `dl`: without usable stored credentials the TUI starts directly
     // in the login popup; otherwise log in now and enter the dashboard with
@@ -53,19 +62,15 @@ pub async fn tui_cmd() -> Result<()> {
     let cfg = ConfigManager::new();
     let stored_username = cfg.stored_username();
     let sessions = if stored_username.is_some() {
-        match SessionCache::new().await {
-            Ok(sessions) => Some(sessions),
-            Err(error)
-                if error.chain().any(|cause| {
-                    cause
-                        .downcast_ref::<crate::modules::DlError>()
-                        .is_some_and(|e| matches!(e, crate::modules::DlError::AuthFailed))
-                }) =>
-            {
+        match cfg.load_credentials() {
+            // Vault empty/unavailable: ask for the account again.
+            Err(_) => None,
+            Ok(_) => match SessionCache::new().await {
+                Ok(sessions) => Some(sessions),
                 // Stale password: offer re-configuration inside the TUI.
-                None
-            }
-            Err(error) => return Err(error),
+                Err(error) if is_auth_failed(&error) => None,
+                Err(error) => return Err(error),
+            },
         }
     } else {
         None
@@ -73,12 +78,6 @@ pub async fn tui_cmd() -> Result<()> {
     let unconfigured = sessions.is_none();
 
     let shared: SharedSession = std::sync::Arc::new(std::sync::Mutex::new(sessions));
-    let fetch_sessions = shared.clone();
-    let action_sessions = shared.clone();
-    let writeups_sessions = shared.clone();
-    let ratings_sessions = shared.clone();
-    let config_sessions = shared.clone();
-    let logout_sessions = shared.clone();
 
     let initial = if unconfigured {
         crate::tui::AppState::unconfigured(stored_username.as_deref())
@@ -86,67 +85,92 @@ pub async fn tui_cmd() -> Result<()> {
         crate::tui::AppState::loading()
     };
 
-    let refetch = move || {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let sessions = take_session(&fetch_sessions)?;
-                fetch_tui_data(&sessions).await
-            })
-        })
-    };
-    let run_action = move |action: TuiAction| {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let sessions = take_session(&action_sessions)?;
-                run_tui_action(&sessions, action).await
-            })
-        })
-    };
-    let run_writeups_fetch = move |machine: &str| {
+    let (backend, rx) = Backend::new(shared);
+    crate::tui::run(initial, &backend, &rx)
+}
+
+/// Executes work spawned by the event loop and reports back over a channel,
+/// so the render thread never blocks on the network.
+pub struct Backend {
+    shared: SharedSession,
+    tx: std::sync::mpsc::Sender<crate::tui::Msg>,
+}
+
+impl Backend {
+    pub fn new(shared: SharedSession) -> (Self, std::sync::mpsc::Receiver<crate::tui::Msg>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (Self { shared, tx }, rx)
+    }
+
+    pub fn spawn_fetch(&self) {
+        let shared = self.shared.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = match take_session(&shared) {
+                Ok(sessions) => fetch_tui_data(&sessions).await,
+                Err(error) => Err(error),
+            };
+            let _ = tx.send(crate::tui::Msg::Data(result));
+        });
+    }
+
+    pub fn spawn_action(&self, action: TuiAction) {
+        let shared = self.shared.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = match take_session(&shared) {
+                Ok(sessions) => run_tui_action(&sessions, action).await,
+                Err(error) => Err(error),
+            };
+            let _ = tx.send(crate::tui::Msg::Action(result));
+        });
+    }
+
+    pub fn spawn_writeups(&self, machine: &str) {
+        let shared = self.shared.clone();
+        let tx = self.tx.clone();
         let machine = machine.to_string();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let sessions = take_session(&writeups_sessions)?;
-                WriteupManager::new(sessions.session())
-                    .fetch(&machine)
-                    .await
-            })
-        })
-    };
-    let run_rating_fetch = move |machine: &str| {
+        tokio::spawn(async move {
+            let result = match take_session(&shared) {
+                Ok(sessions) => WriteupManager::new(sessions.session()).fetch(&machine).await,
+                Err(error) => Err(error),
+            };
+            let _ = tx.send(crate::tui::Msg::Writeups { machine, result });
+        });
+    }
+
+    pub fn spawn_rating(&self, machine: &str) {
+        let shared = self.shared.clone();
+        let tx = self.tx.clone();
         let machine = machine.to_string();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let sessions = take_session(&ratings_sessions)?;
-                RatingManager::new(sessions.session()).fetch(&machine).await
-            })
-        })
-    };
-    let run_config = move |username: &str, password: &str| {
+        tokio::spawn(async move {
+            let result = match take_session(&shared) {
+                Ok(sessions) => RatingManager::new(sessions.session()).fetch(&machine).await,
+                Err(error) => Err(error),
+            };
+            let _ = tx.send(crate::tui::Msg::Rating { machine, result });
+        });
+    }
+
+    pub fn spawn_config(&self, username: &str, password: &str) {
+        let shared = self.shared.clone();
+        let tx = self.tx.clone();
         let username = username.to_string();
         let password = password.to_string();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(configure_account(&config_sessions, &username, &password))
-        })
-    };
-    let logout = move || {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(logout_account(&logout_sessions))
-        })
-    };
+        tokio::spawn(async move {
+            let result = configure_account(&shared, &username, &password).await;
+            let _ = tx.send(crate::tui::Msg::Config { username, result });
+        });
+    }
 
-    let mut host = crate::tui::Host {
-        refetch: &refetch,
-        run_action: &run_action,
-        run_writeups_fetch: &run_writeups_fetch,
-        run_rating_fetch: &run_rating_fetch,
-        run_config: &run_config,
-        logout: &logout,
-        pending_fetch: false,
-    };
-
-    crate::tui::run(initial, &mut host)
+    pub fn spawn_logout(&self) {
+        let shared = self.shared.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = logout_account(&shared).await;
+            let _ = tx.send(crate::tui::Msg::Logout(result));
+        });
+    }
 }
 
 /// Validates the entered credentials by logging in, stores them, and
@@ -403,11 +427,7 @@ async fn run_tui_action(sessions: &SessionCache, action: TuiAction) -> Result<Ac
 
 /// Opens a local file or folder with the system opener.
 fn open_in_browser(path: &std::path::Path) {
-    let _ = std::process::Command::new("xdg-open")
-        .arg(path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let _ = crate::tui::open_external(&path.display().to_string());
 }
 
 /// Fetches every dataset the dashboard shows: the user's profile, the full
@@ -416,33 +436,33 @@ fn open_in_browser(path: &std::path::Path) {
 async fn fetch_tui_data(sessions: &SessionCache) -> Result<TuiData> {
     let session = sessions.session();
 
-    let profile = ProfileFetcher::new(session.clone())
-        .fetch(&sessions.username)
-        .await?;
-    let catalog = crate::modules::machines::MachineScraper::new(session.clone())
-        .get_catalog()
-        .await?;
-
-    // Author ranking position: fetch the full list once and find our
-    // username instead of displaying every entry.
-    let ranking_creador: Option<u64> = async {
-        let body = session.get("/api/ranking_autores").await.ok()?;
-        let list: serde_json::Value = serde_json::from_str(&body).ok()?;
-        let arr = list.as_array()?;
-        let position = arr.iter().position(|author| {
-            author
-                .get("nombre")
-                .and_then(serde_json::Value::as_str)
-                .map(|name| name.trim().eq_ignore_ascii_case(&sessions.username))
-                .unwrap_or(false)
-        })?;
-        Some(position as u64 + 1)
-    }
-    .await;
+    let profile_fetcher = ProfileFetcher::new(session.clone());
+    let scraper = crate::modules::machines::MachineScraper::new(session.clone());
+    let profile_fetch = profile_fetcher.fetch(&sessions.username);
+    let catalog_fetch = scraper.get_catalog();
+    let ranking_fetch = fetch_ranking_creador(&session, &sessions.username);
+    let (profile, catalog, ranking_creador) =
+        tokio::join!(profile_fetch, catalog_fetch, ranking_fetch);
 
     Ok(TuiData {
-        profile,
-        catalog,
+        profile: profile?,
+        catalog: catalog?,
         ranking_creador,
     })
+}
+
+/// Author ranking position: fetch the full list once and find our username
+/// instead of displaying every entry. Best-effort: `None` on any failure.
+async fn fetch_ranking_creador(session: &DlSession, username: &str) -> Option<u64> {
+    let body = session.get("/api/ranking_autores").await.ok()?;
+    let list: serde_json::Value = serde_json::from_str(&body).ok()?;
+    let arr = list.as_array()?;
+    let position = arr.iter().position(|author| {
+        author
+            .get("nombre")
+            .and_then(serde_json::Value::as_str)
+            .map(|name| name.trim().eq_ignore_ascii_case(username))
+            .unwrap_or(false)
+    })?;
+    Some(position as u64 + 1)
 }

@@ -57,13 +57,13 @@ Descarga el archivo de tu plataforma desde la página de [Releases](https://gith
 
 | Plataforma | Archivo |
 | :--- | :--- |
-| Linux x86_64 | `dl-v0.1.2-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS Apple Silicon | `dl-v0.1.2-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `dl-v0.1.2-x86_64-apple-darwin.tar.gz` |
-| Windows x86_64 | `dl-v0.1.2-x86_64-pc-windows-msvc.zip` |
+| Linux x86_64 | `dl-v0.1.3-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS Apple Silicon | `dl-v0.1.3-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `dl-v0.1.3-x86_64-apple-darwin.tar.gz` |
+| Windows x86_64 | `dl-v0.1.3-x86_64-pc-windows-msvc.zip` |
 
 ```bash
-tar xzf dl-v0.1.2-x86_64-unknown-linux-gnu.tar.gz
+tar xzf dl-v0.1.3-x86_64-unknown-linux-gnu.tar.gz
 install -m 755 dl ~/.local/bin/dl
 ```
 

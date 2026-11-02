@@ -149,7 +149,7 @@ impl Popup {
         let completed = common_prefix(&matches);
         // Replace the partial component with the completed prefix, keeping
         // the original `~` spelling the user typed.
-        let mut new_raw = raw[..raw.len().saturating_sub(partial.chars().count())].to_string();
+        let mut new_raw = raw.strip_suffix(partial.as_str()).unwrap_or(&raw).to_string();
         new_raw.push_str(&completed);
         if matches.len() == 1 && completed == matches[0] && !ends_with_sep {
             new_raw.push(std::path::MAIN_SEPARATOR);
@@ -157,6 +157,39 @@ impl Popup {
         *buffer = new_raw;
         self.completions = matches;
     }
+}
+
+/// Opens a URL or local path with the OS handler.
+pub fn open_external(target: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut c = std::process::Command::new("open");
+        c.arg(target);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]).arg(target);
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(target);
+        c
+    };
+
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    // Reap the opener so repeated opens don't accumulate zombies.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// `~` and `~/...` expand to the user's home directory.
@@ -674,14 +707,9 @@ impl AppState {
 
     pub fn open_selected_own_writeup(&mut self) {
         if let Some(url) = self.selected_own_writeup_url() {
-            let opened = std::process::Command::new("xdg-open")
-                .arg(url)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            self.set_status(match opened {
-                Ok(_) => format!("Abierto en el navegador: {url}"),
-                Err(error) => format!("xdg-open falló: {error}"),
+            self.set_status(match open_external(url) {
+                Ok(()) => format!("Abierto en el navegador: {url}"),
+                Err(error) => format!("No se pudo abrir {url}: {error}"),
             });
         }
     }
@@ -1000,14 +1028,9 @@ impl AppState {
         let Some(url) = popup.selected_url() else {
             return;
         };
-        let opened = std::process::Command::new("xdg-open")
-            .arg(url)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        self.set_status(match opened {
-            Ok(_) => format!("Abierto en el navegador: {url}"),
-            Err(error) => format!("xdg-open falló: {error}"),
+        self.set_status(match open_external(url) {
+            Ok(()) => format!("Abierto en el navegador: {url}"),
+            Err(error) => format!("No se pudo abrir {url}: {error}"),
         });
     }
 
@@ -1023,14 +1046,9 @@ impl AppState {
 
     pub fn open_selected_hecha_writeup(&mut self) {
         if let Some(url) = self.selected_hecha_writeup_url() {
-            let opened = std::process::Command::new("xdg-open")
-                .arg(url)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            self.set_status(match opened {
-                Ok(_) => format!("Abierto en el navegador: {url}"),
-                Err(error) => format!("xdg-open falló: {error}"),
+            self.set_status(match open_external(url) {
+                Ok(()) => format!("Abierto en el navegador: {url}"),
+                Err(error) => format!("No se pudo abrir {url}: {error}"),
             });
         } else {
             self.set_status("Esta máquina no tiene writeup enlazado.");
@@ -1229,32 +1247,36 @@ impl AppState {
             self.refresh_requested = true;
         }
     }
-
-    /// Whether the event loop should run a (re)fetch right now.
-    pub fn should_fetch(&self, pending_fetch: bool) -> bool {
-        pending_fetch || self.refresh_requested
-    }
 }
 
-/// Host-provided callbacks the event loop calls synchronously (blocking the
-/// render thread for the duration of each network call).
-pub struct Host<'a> {
-    pub refetch: &'a dyn Fn() -> Result<TuiData>,
-    pub run_action: &'a dyn Fn(TuiAction) -> Result<ActionReport>,
-    pub run_writeups_fetch: &'a dyn Fn(&str) -> Result<Vec<WriteupEntry>>,
-    pub run_rating_fetch: &'a dyn Fn(&str) -> Result<crate::modules::ratings::MachineRating>,
-    pub run_config: &'a dyn Fn(&str, &str) -> Result<()>,
-    pub logout: &'a dyn Fn() -> Result<()>,
-    /// Set when the next loop iteration must (re)fetch all data; `run()`
-    /// seeds it from the entry state's `fetching` label.
-    pub pending_fetch: bool,
+/// Message sent from a background task to the event loop.
+pub enum Msg {
+    Data(Result<TuiData>),
+    Action(Result<ActionReport>),
+    Writeups {
+        machine: String,
+        result: Result<Vec<WriteupEntry>>,
+    },
+    Rating {
+        machine: String,
+        result: Result<crate::modules::ratings::MachineRating>,
+    },
+    Config {
+        username: String,
+        result: Result<()>,
+    },
+    Logout(Result<()>),
 }
 
-pub fn run(mut app: AppState, host: &mut Host<'_>) -> Result<()> {
+pub fn run(
+    mut app: AppState,
+    backend: &crate::commands::Backend,
+    rx: &std::sync::mpsc::Receiver<Msg>,
+) -> Result<()> {
     let mut terminal = ratatui::init();
     // Kick off the first load (and any pending request) before looping.
-    host.pending_fetch = app.fetching.is_some();
-    let result = event_loop(&mut terminal, &mut app, host);
+    let mut pending_fetch = app.fetching.is_some();
+    let result = event_loop(&mut terminal, &mut app, backend, rx, &mut pending_fetch);
     ratatui::restore();
     result
 }
@@ -1262,7 +1284,9 @@ pub fn run(mut app: AppState, host: &mut Host<'_>) -> Result<()> {
 fn event_loop(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     app: &mut AppState,
-    host: &mut Host<'_>,
+    backend: &crate::commands::Backend,
+    rx: &std::sync::mpsc::Receiver<Msg>,
+    pending_fetch: &mut bool,
 ) -> Result<()> {
     loop {
         terminal.draw(|frame| crate::tui::render::draw(frame, app))?;
@@ -1277,15 +1301,71 @@ fn event_loop(
 
         app.tick();
 
-        // Logout from the account popup (`l`).
-        if app.pending_logout {
-            app.pending_logout = false;
-            app.fetching = Some("Cerrando sesión...".to_string());
-            terminal.draw(|frame| crate::tui::render::draw(frame, app))?;
-
-            match (host.logout)() {
-                Ok(()) => {
-                    app.fetching = None;
+        // Results from background tasks, applied in arrival order.
+        while let Ok(msg) = rx.try_recv() {
+            app.fetching = None;
+            match msg {
+                Msg::Data(Ok(data)) => {
+                    app.set_data(data);
+                    app.set_status("Datos actualizados.");
+                }
+                Msg::Data(Err(error)) => {
+                    app.set_status(format!("Error al obtener datos: {error:#}"));
+                }
+                Msg::Action(Ok(report)) => {
+                    app.set_status(report.status.clone());
+                    app.pending_refresh_after_close = report.changed;
+                    app.report = Some(report);
+                }
+                Msg::Action(Err(error)) => {
+                    app.set_status(format!("Acción fallida: {error:#}"));
+                }
+                Msg::Writeups { machine, result } => match result {
+                    Ok(entries) if entries.is_empty() => {
+                        app.set_status(format!("Sin writeups de la comunidad para {machine}."));
+                    }
+                    Ok(entries) => {
+                        app.writeups_popup = Some(WriteupsPopup {
+                            machine,
+                            entries,
+                            selected: 0,
+                        });
+                    }
+                    Err(error) => {
+                        app.set_status(format!("Error al cargar writeups: {error:#}"));
+                    }
+                },
+                Msg::Rating { machine, result } => match result {
+                    Ok(rating) => {
+                        app.popup = Some(Popup {
+                            kind: PopupKind::Valoracion,
+                            machine,
+                            machine_id: 0,
+                            buffers: Vec::new(),
+                            field: 0,
+                            notice: None,
+                            readonly: true,
+                            text: Some(crate::tui::render::format_rating(&rating)),
+                            completions: Vec::new(),
+                            cert: None,
+                        });
+                    }
+                    Err(error) => {
+                        app.set_status(format!("Error al cargar valoración: {error:#}"));
+                    }
+                },
+                Msg::Config { username, result } => match result {
+                    Ok(()) => {
+                        app.needs_config = false;
+                        app.set_status(format!("[✓] Conectado como {username} — cargando datos..."));
+                        *pending_fetch = true;
+                    }
+                    Err(error) => {
+                        app.set_status(format!("Error de configuración: {error:#}"));
+                        app.open_config_popup(ConfigContext::LoginFailed, Some(&username));
+                    }
+                },
+                Msg::Logout(Ok(())) => {
                     app.needs_config = true;
                     app.tab = Tab::Maquinas;
                     app.input_mode = InputMode::Normal;
@@ -1295,31 +1375,23 @@ fn event_loop(
                     app.open_config_popup(ConfigContext::LoggedOut, None);
                     app.set_status("[✓] Sesión cerrada — inicia otra cuenta o pulsa Esc para salir.");
                 }
-                Err(error) => {
-                    app.fetching = None;
+                Msg::Logout(Err(error)) => {
                     app.set_status(format!("Error al cerrar sesión: {error:#}"));
                 }
             }
         }
 
+        // Logout from the account popup (`l`).
+        if app.pending_logout {
+            app.pending_logout = false;
+            app.fetching = Some("Cerrando sesión...".to_string());
+            backend.spawn_logout();
+        }
+
         // Login credentials from the config popup.
         if let Some((username, password)) = app.pending_config.take() {
             app.fetching = Some(format!("Conectando como {username}..."));
-            terminal.draw(|frame| crate::tui::render::draw(frame, app))?;
-
-            match (host.run_config)(&username, &password) {
-                Ok(()) => {
-                    app.fetching = None;
-                    app.needs_config = false;
-                    app.set_status(format!("[✓] Conectado como {username} — cargando datos..."));
-                    host.pending_fetch = true;
-                }
-                Err(error) => {
-                    app.fetching = None;
-                    app.set_status(format!("Error de configuración: {error:#}"));
-                    app.open_config_popup(ConfigContext::LoginFailed, Some(&username));
-                }
-            }
+            backend.spawn_config(&username, &password);
         }
 
         // Start queued/pending downloads as slots free up.
@@ -1371,89 +1443,26 @@ fn event_loop(
                 ActionKind::DownloadAllCerts => "Descargando todos los certificados...".to_string(),
             };
             app.fetching = Some(label);
-            terminal.draw(|frame| crate::tui::render::draw(frame, app))?;
-
-            match (host.run_action)(action) {
-                Ok(report) => {
-                    app.set_status(report.status.clone());
-                    app.pending_refresh_after_close = report.changed;
-                    app.report = Some(report);
-                }
-                Err(error) => app.set_status(format!("Acción fallida: {error:#}")),
-            }
-            app.fetching = None;
+            backend.spawn_action(action);
         }
 
-        // Blocking writeups fetch for the `w` key.
+        // Community writeups fetch for the `w` key.
         if let Some(machine) = app.pending_writeups.take() {
             app.fetching = Some(format!("Cargando writeups de {machine}..."));
-            terminal.draw(|frame| crate::tui::render::draw(frame, app))?;
-
-            match (host.run_writeups_fetch)(&machine) {
-                Ok(entries) => {
-                    app.fetching = None;
-                    if entries.is_empty() {
-                        app.set_status(format!("Sin writeups de la comunidad para {machine}."));
-                    } else {
-                        app.writeups_popup = Some(WriteupsPopup {
-                            machine,
-                            entries,
-                            selected: 0,
-                        });
-                    }
-                }
-                Err(error) => {
-                    app.fetching = None;
-                    app.set_status(format!("Error al cargar writeups: {error:#}"));
-                }
-            }
+            backend.spawn_writeups(&machine);
         }
 
-        // Rating averages fetch for the `v` key; opens the Valoración popup.
+        // Rating averages fetch for the `v` key.
         if let Some(machine) = app.pending_rating.take() {
             app.fetching = Some(format!("Cargando valoración de {machine}..."));
-            terminal.draw(|frame| crate::tui::render::draw(frame, app))?;
-
-            match (host.run_rating_fetch)(&machine) {
-                Ok(rating) => {
-                    app.fetching = None;
-                    app.popup = Some(Popup {
-                        kind: PopupKind::Valoracion,
-                        machine: machine.clone(),
-                        machine_id: 0,
-                        buffers: Vec::new(),
-                        field: 0,
-                        notice: None,
-                        readonly: true,
-                        text: Some(crate::tui::render::format_rating(&rating)),
-                        completions: Vec::new(),
-            cert: None,
-                    });
-                }
-                Err(error) => {
-                    app.fetching = None;
-                    app.set_status(format!("Error al cargar valoración: {error:#}"));
-                }
-            }
+            backend.spawn_rating(&machine);
         }
 
-        if app.should_fetch(host.pending_fetch) {
-            host.pending_fetch = false;
+        if *pending_fetch || app.refresh_requested {
+            *pending_fetch = false;
             app.refresh_requested = false;
             app.fetching = Some("Actualizando datos...".to_string());
-            // Draw immediately so the `⟳ <label>` shows while the blocking
-            // fetch runs, instead of freezing silently.
-            terminal.draw(|frame| crate::tui::render::draw(frame, app))?;
-
-            let result = (host.refetch)();
-            app.fetching = None;
-            match result {
-                Ok(data) => {
-                    app.set_data(data);
-                    app.set_status("Datos actualizados.");
-                }
-                Err(error) => app.set_status(format!("Error al obtener datos: {error:#}")),
-            }
+            backend.spawn_fetch();
         }
 
         if app.quit {
@@ -1716,11 +1725,9 @@ mod tests {
                     id: 1,
                     name: "Intranet".into(),
                     dificultad: "Fácil".into(),
-                    clase: "facil".into(),
                     color: "#8bc34a".into(),
                     categoria: "Hacking Web".into(),
                     autor: "d1se0".into(),
-                    autor_url: String::new(),
                     fecha: "15/03/2025".into(),
                     descripcion: "Una máquina fácil, con web".into(),
                 },
@@ -1728,11 +1735,9 @@ mod tests {
                     id: 2,
                     name: "Dance Samba".into(),
                     dificultad: "Medio".into(),
-                    clase: "medio".into(),
                     color: "#e0a553".into(),
                     categoria: "Pivoting".into(),
                     autor: "El Pingüino".into(),
-                    autor_url: String::new(),
                     fecha: "01/12/2024".into(),
                     descripcion: String::new(),
                 },
@@ -1876,6 +1881,38 @@ mod tests {
         // Typing clears the stale listing.
         state.popup.as_mut().unwrap().push('x');
         assert!(state.popup.as_ref().unwrap().completions.is_empty());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn destination_completion_handles_non_ascii() {
+        let base = std::env::temp_dir().join(format!("dl-tui-utf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("ñandú")).unwrap();
+        std::fs::create_dir_all(base.join("ñandúa")).unwrap();
+
+        let mut state = app();
+        state.popup = Some(Popup {
+            kind: PopupKind::Descarga,
+            machine: "X".into(),
+            machine_id: 1,
+            buffers: vec![format!("{}/ñan", base.display())],
+            field: 0,
+            notice: None,
+            readonly: false,
+            text: None,
+            completions: Vec::new(),
+            cert: None,
+        });
+        handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+        );
+
+        let popup = state.popup.as_ref().unwrap();
+        assert_eq!(popup.buffers[0], format!("{}/ñandú", base.display()));
+        assert_eq!(popup.completions, ["ñandú", "ñandúa"]);
 
         let _ = std::fs::remove_dir_all(&base);
     }

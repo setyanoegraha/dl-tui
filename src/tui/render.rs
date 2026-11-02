@@ -65,10 +65,8 @@ pub fn draw(frame: &mut Frame, app: &mut AppState) {
     if let Some(report) = &app.report {
         draw_report(frame, frame.area(), report);
     }
-    if app.writeups_popup.is_some() {
-        if let Some(popup) = app.writeups_popup.clone() {
-            draw_writeups_popup(frame, frame.area(), &popup);
-        }
+    if let Some(popup) = &app.writeups_popup {
+        draw_writeups_popup(frame, frame.area(), popup);
     }
 }
 
@@ -672,13 +670,9 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
     }
     lines.push(Line::from(Span::styled(hint, Style::new().dim())));
 
-    let border_color = match popup.kind {
-        PopupKind::Config => WARN,
-        _ => WARN,
-    };
     let block = Block::bordered()
-        .title(Span::styled(title, Style::new().fg(border_color).bold()))
-        .border_style(Style::new().fg(border_color));
+        .title(Span::styled(title, Style::new().fg(WARN).bold()))
+        .border_style(Style::new().fg(WARN));
 
     frame.render_widget(Paragraph::new(lines).block(block), box_area);
 }

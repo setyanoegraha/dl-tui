@@ -7,7 +7,6 @@
 
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::HashMap;
 
 use crate::modules::session::DlSession;
 
@@ -16,11 +15,9 @@ pub struct Machine {
     pub id: u32,
     pub name: String,
     pub dificultad: String,
-    pub clase: String,
     pub color: String,
     pub categoria: String,
     pub autor: String,
-    pub autor_url: String,
     pub fecha: String,
     pub descripcion: String,
 }
@@ -116,12 +113,6 @@ pub fn parse_catalog(html: &str) -> Vec<Machine> {
 
     let mut machines = Vec::new();
     for card in doc.select(&card_sel) {
-        let clase = card
-            .value()
-            .attr("class")
-            .and_then(|c| c.split_whitespace().find(|t| *t != "maquina-item"))
-            .unwrap_or("")
-            .to_string();
         let categoria = card
             .value()
             .attr("data-category")
@@ -169,10 +160,8 @@ pub fn parse_catalog(html: &str) -> Vec<Machine> {
             dificultad: args[1].clone(),
             color: args[2].clone(),
             autor: args[3].clone(),
-            autor_url: args[4].clone(),
             fecha: args[5].clone(),
-            clase: clase.clone(),
-            categoria: categoria.clone(),
+            categoria,
             descripcion: descripcion.unwrap_or_default(),
         };
         if !machine.name.is_empty() {
@@ -197,18 +186,13 @@ pub fn fecha_sort_key(fecha: &str) -> (u32, u32, u32) {
 
 /// Difficulty rank for sorting (Muy Fácil first). Accent-insensitive.
 pub fn dificultad_rank(dificultad: &str) -> u8 {
-    HashMap::from([
-        ("muy fácil", 0u8),
-        ("muy facil", 0),
-        ("fácil", 1),
-        ("facil", 1),
-        ("medio", 2),
-        ("difícil", 3),
-        ("dificil", 3),
-    ])
-    .get(dificultad.trim().to_lowercase().as_str())
-    .copied()
-    .unwrap_or(4)
+    match dificultad.trim().to_lowercase().as_str() {
+        "muy fácil" | "muy facil" => 0,
+        "fácil" | "facil" => 1,
+        "medio" => 2,
+        "difícil" | "dificil" => 3,
+        _ => 4,
+    }
 }
 
 #[cfg(test)]
@@ -236,7 +220,6 @@ mod tests {
         assert_eq!(machines[0].id, 123);
         assert_eq!(machines[0].name, "Intranet");
         assert_eq!(machines[0].dificultad, "Fácil");
-        assert_eq!(machines[0].clase, "facil");
         assert_eq!(machines[0].categoria, "Hacking Web");
         assert_eq!(machines[0].autor, "d1se0");
         assert_eq!(machines[0].fecha, "15/03/2025");
@@ -245,7 +228,7 @@ mod tests {
 
         assert_eq!(machines[1].id, 99);
         assert_eq!(machines[1].name, "Dance Samba");
-        assert_eq!(machines[1].clase, "medio");
+        assert_eq!(machines[1].categoria, "Pivoting");
         assert!(machines[1].descripcion.is_empty());
     }
 
@@ -284,7 +267,6 @@ mod tests {
         assert_eq!(m.id, 281);
         assert_eq!(m.name, "PipePwned");
         assert_eq!(m.dificultad, "Medio");
-        assert_eq!(m.clase, "medio");
         assert_eq!(m.autor, "M4RC0Sx22");
         assert_eq!(m.fecha, "11/08/2026");
         assert_eq!(m.descripcion, "Basada en CI/CD, deberás encadenar varias debilidades");
