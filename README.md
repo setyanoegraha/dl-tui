@@ -192,6 +192,12 @@ Sibling project: [hmv-tui](https://github.com/setyanoegraha/hmv-tui) — the sam
 
 ---
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
 Made with ❤️ by [Ouba](https://github.com/setyanoegraha).
 
 *¡Feliz hacking en DockerLabs!*
